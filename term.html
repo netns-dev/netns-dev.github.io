@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>netns.dev — Namespace Terminal</title>
+<meta name="description" content="netns.dev — the hidden terminal of the namespace. keyboard only, no mouse.">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#010503">
+<style>
+  :root{ --green:#00e69c; --dim:#1d7a54; --bright:#eafff5; --bg:#010503; }
+  *{ margin:0; box-sizing:border-box; }
+  html,body{ height:100%; }
+  body{
+    background:var(--bg);
+    background-image:radial-gradient(900px 600px at 50% 20%, rgba(0,120,70,.16), transparent 70%);
+    font-family:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,"Liberation Mono",monospace;
+    color:var(--green);
+    display:grid; place-items:center;
+    padding:14px;
+  }
+  body::after{ /* scanlines — same as the LED gate */
+    content:""; position:fixed; inset:0; pointer-events:none;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+  }
+  /* ---------- terminal panel — tuned to match index.html ---------- */
+  .crt{
+    position:relative;
+    width:min(760px,94vw);
+    height:min(540px,88vh);
+    background:rgba(0,18,9,.55);
+    border:1px solid rgba(0,230,156,.4);
+    border-radius:8px;
+    box-shadow:0 0 30px rgba(0,230,156,.12), inset 0 0 30px rgba(0,60,32,.35);
+  }
+  .crt::before{ /* vignette */
+    content:""; position:absolute; inset:0; border-radius:8px; pointer-events:none; z-index:3;
+    background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.5) 100%);
+  }
+  .crt::after{ /* moving phosphor band */
+    content:""; position:absolute; inset:0; border-radius:8px; pointer-events:none; z-index:3;
+    background:linear-gradient(0deg, transparent 0%, rgba(0,230,156,.05) 46%, rgba(0,230,156,.13) 50%, rgba(0,230,156,.05) 54%, transparent 100%);
+    background-size:100% 220px;
+    background-repeat:no-repeat;
+    animation:band 7s linear infinite;
+  }
+  @keyframes band{ from{ background-position:0 -220px; } to{ background-position:0 calc(100% + 220px); } }
+  .flick{ position:absolute; inset:0; border-radius:8px; background:#fff; opacity:.012; z-index:4; pointer-events:none;
+    animation:flick 4.2s infinite; }
+  @keyframes flick{ 0%,100%{opacity:.012} 7%{opacity:.028} 9%{opacity:.01} 63%{opacity:.03} 65%{opacity:.012} }
+
+  .screen{
+    position:absolute; inset:0; z-index:2;
+    padding:clamp(20px,4.5vw,40px);
+    display:flex; flex-direction:column;
+  }
+  h1{
+    font-size:clamp(24px,4vw,38px);
+    letter-spacing:.04em;
+    text-shadow:0 0 6px rgba(0,230,156,.8), 0 0 26px rgba(0,230,156,.35);
+    margin-bottom:.35em;
+  }
+  h1 .tld{ color:var(--dim); text-shadow:0 0 6px rgba(29,122,84,.7); }
+  .sub{ color:var(--dim); font-size:clamp(11px,1.6vw,13px); margin:2px 0 18px; letter-spacing:.12em; }
+
+  .out{
+    flex:1; font-size:clamp(12px,1.9vw,14.5px); line-height:1.72;
+    text-shadow:0 0 5px rgba(0,230,156,.45);
+    overflow:auto; scrollbar-width:none;
+  }
+  .out::-webkit-scrollbar{ display:none; }
+  .line{ opacity:0; white-space:pre-wrap; transition:opacity .15s; }
+  .line.on{ opacity:1; }
+  .cmd{ color:var(--bright); font-weight:700; }
+  .cmd::before{ content:"$ "; color:var(--dim); }
+  .outline{ color:#7fe8bd; }
+  .svc{ color:#a5ffd2; }
+  .dim{ color:var(--dim); }
+  .caret{ display:inline-block; width:.62em; height:1.05em; background:var(--green); vertical-align:-.15em;
+    animation:blink 1.05s steps(1) infinite; }
+  @keyframes blink{ 50%{ opacity:0; } }
+
+  .cmdline{ display:none; align-items:center; gap:6px; margin-top:10px; }
+  .pp{ color:var(--bright); } .pp1{ color:var(--dim); } .pp2{ color:var(--green); }
+  #cmd{
+    flex:1; background:transparent; border:none; outline:none;
+    color:#eaffff; font:inherit; caret-color:#00e69c;
+  }
+  .fx{ margin-top:12px; color:var(--dim); font-size:11px; letter-spacing:.14em; }
+  @media (prefers-reduced-motion: reduce){
+    .crt::after,.flick,.caret{ animation:none; }
+  }
+</style>
+</head>
+<body>
+  <div class="crt">
+    <div class="flick"></div>
+    <div class="screen">
+      <h1>netns<span class="tld">.dev</span></h1>
+      <p class="sub">— NAMESPACE TERMINAL · THE ROOM BEHIND THE GATE —</p>
+      <div class="out" id="out"></div>
+      <div class="cmdline" id="cmdline">
+        <span class="pp">netns@dev</span><span class="pp1">:</span><span class="pp2">~</span><span class="pp1">$</span>
+        <input id="cmd" autocomplete="off" spellcheck="false" disabled>
+      </div>
+      <p class="fx">[ ESC ] BACK TO THE GATE&nbsp;&nbsp;·&nbsp;&nbsp;TYPE <span style="color:#7fe8bd">help</span> FOR COMMANDS</p>
+    </div>
+  </div>
+
+<script>
+const out = document.getElementById('out');
+const cmdline = document.getElementById('cmdline');
+const inp = document.getElementById('cmd');
+const K = { mint:'#00e69c', bright:'#eafff5', dim:'#1d7a54', soft:'#7fe8bd', svc:'#a5ffd2', err:'#ff7f66' };
+
+let ready = false;
+
+/* ---------------- boot (typed, any key skips) ---------------- */
+const BOOT = [
+  ['cmd',    'banner: netns.dev — namespace terminal v1.0 · kernel 5.4'],
+  ['cmd',    'ping -c1 ns0.netns.dev'],
+  ['outline','64 bytes from ns0:443 — uplink secured (tls 1.3, 0.07ms)'],
+  ['cmd',    'cat /etc/welcome'],
+  ['outline','network namespace — every subdomain lives in its own little world.\nhost ip 172.16.66.66 — knock before you peek.'],
+  ['cmd',    'ls -la /services/'],
+  ['svc',    '◆ git.netns.dev       Gitea        ● ONLINE'],
+  ['svc',    '◆ status.netns.dev    UptimeKuma   ● ONLINE'],
+  ['svc',    '◆ api.netns.dev       API Gateway  ● ONLINE'],
+  ['svc',    '◆ lab.netns.dev       Playground   ● ONLINE'],
+  ['svc',    '◆ mail.netns.dev      Postfix      ● ONLINE'],
+  ['cmd',    'curl -s netns.dev/whoami'],
+  ['outline','"the network is the computer" — though here, everything lives inside a namespace'],
+  ['dim',    '[ ready ] the terminal is yours — type help'],
+];
+
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const caret = document.createElement('span');
+caret.className = 'caret';
+let li = 0, tok = 0, doneFlag = false;
+
+function addLine(k, t){
+  const d = document.createElement('div');
+  d.className = 'line ' + k;
+  d.textContent = t;
+  d.appendChild(caret);
+  out.appendChild(d);
+  out.scrollTop = out.scrollHeight;
+  return d;
+}
+function showPrompt(){
+  if (ready) return;
+  ready = true;
+  caret.style.animation = 'none'; caret.style.opacity = 1;
+  cmdline.style.display = 'flex';
+  inp.disabled = false;
+  inp.focus();
+}
+function next(){
+  if (li >= BOOT.length) return showPrompt();
+  const [k, t] = BOOT[li];
+  const d = addLine(k, '');
+  let i = 0, myTok = tok;
+  (function tick(){
+    if (myTok !== tok) return;           // skipped
+    i += 2 + (Math.random() * 3 | 0);
+    d.textContent = t.slice(0, i);
+    d.appendChild(caret);
+    out.scrollTop = out.scrollHeight;
+    if (i < t.length) setTimeout(tick, 12 + Math.random() * 24 + (k === 'svc' ? 28 : 0));
+    else {
+      d.classList.add('on');
+      setTimeout(() => { if (myTok !== tok) return; li++; next(); }, 150 + Math.random() * 260);
+    }
+  })();
+}
+function skipBoot(){
+  tok++;
+  out.replaceChildren();
+  BOOT.forEach(([k, t]) => { const d = addLine(k, t); d.classList.add('on'); });
+  showPrompt();
+}
+if (reduced) skipBoot(); else next();
+
+/* ---------------- interactive prompt (keyboard only) ---------------- */
+const SVCS = [
+  '◆ git.netns.dev       Gitea        ● ONLINE',
+  '◆ status.netns.dev    UptimeKuma   ● ONLINE',
+  '◆ api.netns.dev       API Gateway  ● ONLINE',
+  '◆ lab.netns.dev       Playground   ● ONLINE',
+  '◆ mail.netns.dev      Postfix      ● ONLINE',
+];
+const NSLIST = [
+  'NAME   ID  IFACE   IP',
+  '-----  --  ------  ------------',
+  'web    0   veth0   10.66.0.2/24',
+  'api    1   veth1   10.66.0.3/24',
+  'db     2   veth2   10.66.0.4/24',
+  'lab    3   veth3   10.66.0.5/24',
+  'host   --  eth0    172.16.66.66/24',
+];
+
+let hist = [], hIdx = 0, cur = '';
+
+function emit(parts){
+  const d = document.createElement('div');
+  if (typeof parts === 'string') d.textContent = parts;
+  else parts.forEach(([c, t]) => {
+    const s = document.createElement('span');
+    s.style.color = c; s.textContent = t; d.appendChild(s);
+  });
+  out.appendChild(d);
+  out.scrollTop = out.scrollHeight;
+  return d;
+}
+function echoPrompt(cmd){
+  const d = document.createElement('div');
+  [['#eafff5','netns@dev'],['#1d7a54',':'],['#00e69c','~'],['#1d7a54','$ ']]
+    .forEach(([c, t]) => { const s = document.createElement('span'); s.style.color = c; s.textContent = t; d.appendChild(s); });
+  d.appendChild(document.createTextNode(cmd));
+  out.appendChild(d); out.scrollTop = out.scrollHeight;
+}
+function rnd(a, b){ return (a + Math.random() * (b - a)).toFixed(2); }
+
+const CMDS = {
+  help(){ emit([[K.mint,'help │ whoami │ ls │ netns list │ ip a │ ping netns.dev │ matrix │ version │ date │ clear │ exit']]); },
+  whoami(){ emit([[K.bright,'root@ns0 — the traffic cop of the internet']]); },
+  ls(){ SVCS.forEach(l => emit(l)); },
+  cat(v){
+    const f = v.split(/\s+/)[1] || '';
+    if (f === 'services.yaml') emit([[K.bright,'services:'], [K.dim,'  git/status/api/lab/mail — all online, all in veth']]);
+    else emit([[K.err,'cat: '],[K.dim, f || '(no such file)'],[K.err,' — maybe cat services.yaml?']]);
+  },
+  'netns'(v){
+    const w = v.trim().split(/\s+/);
+    if (w[1] === 'list'){ NSLIST.forEach(l => emit(l)); }
+    else if (w[1] === 'add'){ emit([[K.mint,'namespace created: '],[K.bright, w[2] || 'anon'], [K.dim,' (blink, and it exists)']]); }
+    else emit([[K.mint,'usage: netns list │ netns add <name>']]);
+  },
+  ip(v){
+    if (v.includes('a') || v.includes('addr')){
+      emit([[K.bright,'1: lo: <LOOPBACK,UP> mtu 65536 '],[K.dim,'— inet 127.0.0.1/8 (the self-love address)']]);
+      emit([[K.bright,'2: eth0: <BROADCAST,UP> mtu 1500 '],[K.dim,'— inet 172.16.66.66/24 (NS_HOST)']]);
+      emit([[K.bright,'3: veth0: <POINTOPOINT,UP> mtu 1500 '],[K.dim,'— inet 10.66.0.2/24 (web)']]);
+    } else emit([[K.mint,'usage: ip a (there is no other mode)']]);
+  },
+  ping(){
+    for (let n = 1; n <= 3; n++)
+      emit([[K.soft,'64 bytes from 172.16.0.1: icmp_seq='],[K.soft, String(n)],[K.soft,' ttl=64 time='],[K.bright, rnd(0.3, 0.5)],[K.soft,' ms']]);
+    emit([[K.mint,'--- netns.dev ping statistics --- '],[K.dim,'3 sent, 3 received, 0% loss — the internet is fine']]);
+  },
+  matrix(){ emit([[K.mint,'Wake up, Neo...'],[K.dim,' it is only a namespace.']]); },
+  version(){ emit([[K.bright,'netns.sh 1.0 (kernel 5.4) '],[K.dim,'— bridges by veth, power by vibes']]); },
+  date(){ emit([[K.bright, new Date().toString()]]); },
+  clear(){ out.replaceChildren(); },
+  exit(){ emit([[K.err,'exit: there is no exit. only namespace.'],[K.dim,' [ESC] leaves the terminal']]); },
+  echo(v){ emit(v.replace(/^echo\s*/i, '')); },
+};
+
+inp.addEventListener('keydown', (e) => {
+  if (!ready) return;
+  if (e.key === 'ArrowUp'){
+    e.preventDefault();
+    if (hist.length){
+      hIdx = Math.max(0, hIdx - 1);
+      cur = inp.value;
+      inp.value = hist[hIdx];
+    }
+    return;
+  }
+  if (e.key === 'ArrowDown'){
+    e.preventDefault();
+    if (hIdx < hist.length){
+      hIdx++;
+      inp.value = hIdx === hist.length ? cur : hist[hIdx];
+    }
+    return;
+  }
+  if (e.key !== 'Enter') return;
+  const v = inp.value;
+  inp.value = '';
+  if (!v.trim()) return;
+  hist.push(v); hIdx = hist.length; cur = '';
+  echoPrompt(v);
+  const head = (v.trim().split(/\s+/)[0] || '').toLowerCase();
+  if (CMDS[head]) CMDS[head](v.trim());
+  else emit([[K.err,'zsh: command not found: '],[K.err, head],[K.dim,'   (try help)']]);
+});
+
+/* global keys: ESC to the gate, refocus input; during boot any key skips */
+addEventListener('keydown', (e) => {
+  if (e.repeat) return;
+  if (e.key === 'Escape'){ location.href = 'index.html'; return; }
+  if (!ready){ skipBoot(); return; }
+  if (document.activeElement !== inp) inp.focus();
+});
+</script>
+</body>
+</html>

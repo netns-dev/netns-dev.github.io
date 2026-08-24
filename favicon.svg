@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 512" role="img" aria-label="netns.dev">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="82%">
+      <stop offset="0%" stop-color="#0c2918"/>
+      <stop offset="55%" stop-color="#04150c"/>
+      <stop offset="100%" stop-color="#020a06"/>
+    </radialGradient>
+    <radialGradient id="dot" cx="38%" cy="30%" r="88%">
+      <stop offset="0%" stop-color="#6cffd2"/>
+      <stop offset="55%" stop-color="#17f5a9"/>
+      <stop offset="100%" stop-color="#00b578"/>
+    </radialGradient>
+    <filter id="g" x="-45%" y="-45%" width="190%" height="190%">
+      <feGaussianBlur stdDeviation="11"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <rect x="4" y="4" width="504" height="504" rx="112" fill="none" stroke="#00e69c" stroke-opacity=".14" stroke-width="7"/>
+
+  <!-- 5x5 dot-matrix "N" — blocky LED cells, same grid as the homepage -->
+  <g id="dots" fill="url(#dot)">
+    <!-- row 0 -->
+    <rect x="133" y="133" width="38" height="38" rx="9"/>
+    <rect x="341" y="133" width="38" height="38" rx="9"/>
+    <!-- row 1 -->
+    <rect x="133" y="185" width="38" height="38" rx="9"/>
+    <rect x="185" y="185" width="38" height="38" rx="9"/>
+    <rect x="341" y="185" width="38" height="38" rx="9"/>
+    <!-- row 2 -->
+    <rect x="133" y="237" width="38" height="38" rx="9"/>
+    <rect x="237" y="237" width="38" height="38" rx="9"/>
+    <rect x="341" y="237" width="38" height="38" rx="9"/>
+    <!-- row 3 -->
+    <rect x="133" y="289" width="38" height="38" rx="9"/>
+    <rect x="289" y="289" width="38" height="38" rx="9"/>
+    <rect x="341" y="289" width="38" height="38" rx="9"/>
+    <!-- row 4 -->
+    <rect x="133" y="341" width="38" height="38" rx="9"/>
+    <rect x="341" y="341" width="38" height="38" rx="9"/>
+  </g>
+  <use href="#dots" xlink:href="#dots" filter="url(#g)" opacity=".55"/>
+  <use href="#dots" xlink:href="#dots"/>
+</svg>
