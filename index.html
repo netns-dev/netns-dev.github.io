@@ -13,6 +13,8 @@
   *{ margin:0; box-sizing:border-box; }
   body{
     background:#04150c;
+    /* shows through the canvas when WebGL is unavailable or the shader fails */
+    background-image:radial-gradient(620px 420px at 50% 50%, rgba(0,230,156,.10), transparent 72%);
     color:#00e69c;
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
     min-height:100vh;
@@ -21,172 +23,249 @@
   }
   canvas{ position:fixed; inset:0; width:100%; height:100%; z-index:-1; display:block; }
 
-  h1{
+  /* The dot-matrix title is drawn by the shader along with the background, so this
+     heading is kept out of the way: it still names the page for search engines and
+     screen readers, and .fallback turns it back into the visible title if WebGL
+     cannot start (in which case effects run on the background only). */
+  #title{
+    position:absolute; width:1px; height:1px; overflow:hidden;
+    clip-path:inset(50%); white-space:nowrap; border:0; padding:0;
+  }
+  #title.fallback{
+    position:static; width:auto; height:auto; overflow:visible; clip-path:none;
     font-size:2rem; font-weight:600; letter-spacing:.02em;
     color:#eafff5; cursor:pointer; user-select:none;
-    text-shadow:
-      0 0 8px rgba(0,230,156,.85),
-      0 0 24px rgba(0,230,156,.55),
-      0 0 60px rgba(0,230,156,.4);
-    animation:flicker 7.3s steps(1,end) infinite;
+    text-shadow:0 0 8px rgba(0,230,156,.85), 0 0 24px rgba(0,230,156,.55), 0 0 60px rgba(0,230,156,.4);
   }
-  h1 span{ color:#00e69c; text-shadow:inherit; }
-  /* broken neon: harsh stutter, then steady; small glitches recur each cycle */
-  @keyframes flicker{
-    0%,10%,54%,58%,84%,100%{ opacity:1; }
-    1%    { opacity:.15; }
-    2%    { opacity:1; }
-    4%    { opacity:.3; }
-    5%    { opacity:1; }
-    6.5%  { opacity:.55; }
-    8%    { opacity:.2; }
-    9%    { opacity:1; }
-    55%   { opacity:.22; }
-    56%   { opacity:1; }
-    57%   { opacity:.5; }
-    83%   { opacity:.35; }
-  }
-  /* overload: link saturation — red alert stutter */
-  h1.surge{
-    color:#ffe9e6;
-    text-shadow:0 0 8px rgba(255,90,70,.9), 0 0 26px rgba(255,90,70,.6), 0 0 60px rgba(255,90,70,.4);
-    animation:surge .95s steps(1,end) 1;
-  }
-  h1.surge span{ color:#ff5a46; }
-  @keyframes surge{
-    0%  { opacity:1;   transform:translate(0,0); }
-    12% { opacity:.25; transform:translate(-2px,1px) skewX(-8deg); }
-    20% { opacity:1;   transform:translate(2px,-1px) skewX(6deg); }
-    32% { opacity:.4;  transform:translate(-1px,0) skewX(-4deg); }
-    44% { opacity:1;   transform:translate(1px,0); }
-    60% { opacity:.6;  transform:translate(0,1px) skewX(3deg); }
-    75%,100%{ opacity:1; transform:translate(0,0); }
-  }
-  /* blackout: power cut, then the tube stutters back on */
-  h1.cut{ animation:cut 1.7s steps(1,end) 1; }
-  @keyframes cut{
-    0%  { opacity:1; }
-    8%  { opacity:0; }
-    36% { opacity:0; }
-    40% { opacity:.6; }
-    44% { opacity:.05; }
-    48% { opacity:1; }
-    52% { opacity:.2; }
-    56% { opacity:1; }
-    100%{ opacity:1; }
-  }
-  /* glitch: one torn frame */
-  h1.tear{ animation:tear .42s steps(1,end) 1; }
-  @keyframes tear{
-    0%  { opacity:1;  transform:translate(0,0); }
-    14% { opacity:.35; transform:translate(-6px,0); }
-    28% { opacity:1;  transform:translate(5px,0); }
-    42% { opacity:.5;  transform:translate(-3px,0); }
-    60% { opacity:1;  transform:translate(2px,0); }
-    100%{ opacity:1;  transform:translate(0,0); }
-  }
+  #title.fallback span{ text-shadow:inherit; }
+  #title.fallback span:last-child{ color:#00e69c; }
 
-  /* ---------- slash terminal ---------- */
-  .term{
-    position:fixed; left:50%; bottom:0; z-index:10;
-    width:min(620px,94vw);
-    background:rgba(2,14,8,.94);
-    border:1px solid rgba(0,230,156,.4); border-bottom:none;
-    border-radius:10px 10px 0 0;
-    box-shadow:0 0 30px rgba(0,230,156,.14);
-    padding:12px 14px 10px;
-    transform:translate(-50%,105%);
-    opacity:0; pointer-events:none;
-    transition:transform .28s cubic-bezier(.2,.8,.2,1), opacity .28s;
-  }
-  .term.open{ transform:translate(-50%,0); opacity:1; pointer-events:auto; }
-  /* short enough to sit below the centred title, so the title never moves */
-  #term-out{
-    max-height:min(26vh,190px); overflow:auto; scrollbar-width:none;
-    font-size:clamp(11.5px,1.6vw,13px); line-height:1.6;
-    white-space:pre-wrap; text-shadow:0 0 5px rgba(0,230,156,.35);
-  }
-  #term-out::-webkit-scrollbar{ display:none; }
-  .t-cmd{ color:#eafff5; } .t-dim{ color:#1d7a54; }
-  .t-bin{ color:#a5ffd2; } .t-err{ color:#ff7f66; }
-  .term-line{ display:flex; align-items:center; gap:6px; margin-top:10px; }
-  .pp{ color:#eafff5; } .pp1{ color:#1d7a54; } .pp2{ color:#00e69c; }
-  #term-in{
-    flex:1; background:transparent; border:none; outline:none;
-    color:#eafff5; font:inherit; caret-color:#00e69c;
-  }
-  .term-hint{ margin-top:8px; font-size:11px; letter-spacing:.14em; color:#1d7a54; }
-  /* on short screens keep the panel low enough that it can never reach the title */
-  @media (max-height: 620px){
-    #term-out{ max-height:min(20vh,140px); }
-  }
-
-  @media (prefers-reduced-motion: reduce){
-    h1, h1.surge, h1.cut, h1.tear{ animation:none; }
-    .term{ transition:none; }
-  }
 </style>
 </head>
 <body>
   <canvas id="bg" aria-hidden="true"></canvas>
-  <h1 id="title"><span id="t-name">netns</span><span id="t-tld">.dev</span></h1>
+  <h1 id="title"><span>netns</span><span>.dev</span></h1>
 
-  <div class="term" id="term" role="dialog" aria-label="netns effect console">
-    <div id="term-out"></div>
-    <div class="term-line">
-      <span class="pp">netns@dev</span><span class="pp1">:</span><span class="pp2">~</span><span class="pp1">$</span>
-      <input id="term-in" autocomplete="off" spellcheck="false" aria-label="command">
-    </div>
-    <p class="term-hint">[ ESC ] CLOSE&nbsp;&nbsp;·&nbsp;&nbsp;TYPE <span style="color:#7fe8bd">ls /bin</span> FOR BINS</p>
-  </div>
+  <!-- The page has no controls of its own. The effects are driven from the
+       browser console (see netns.help), from a click on the title, and from the
+       konami code. -->
 
 <script>
-/* ============ effect bins ============ */
+/* ============ state shared with the renderer ============ */
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/* timers read by the renderer each frame */
-const FX  = { surge: -1e9, blackout: -1e9, glitch: -1e9 };
-const DUR = { surge: 3000, blackout: 1700, glitch: 420 };
+const rnd = (a, b) => a + Math.random() * (b - a);
+const between = (a, b) => Math.random() < .5 ? -1 : 1;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-const title = document.getElementById('title');
-let pulseTimer = null;
-function pulseTitle(cls, ms){
-  title.classList.remove('surge', 'cut', 'tear');
-  void title.offsetWidth;                              // restart the keyframes
-  title.classList.add(cls);
-  clearTimeout(pulseTimer);
-  pulseTimer = setTimeout(() => title.classList.remove(cls), ms);
+/* Per-run envelopes for the background, and the title's own pose. The renderer
+   reads both every frame; the bins write them. Every activation redraws its
+   durations, jolt counts and rhythm, so no two runs look alike. */
+const FX = { surge: null, blackout: null, glitch: null };
+const T  = { op: 1, jx: 0, jy: 0, skew: 0, red: 0 };
+
+/* ============ dot-matrix title ============ */
+/* 5x5 glyph bitmaps, one bit per column (MSB = leftmost), same grid as favicon.svg */
+const FONT = {
+  'N': [0b10001, 0b11001, 0b10101, 0b10011, 0b10001],
+  'E': [0b11111, 0b10000, 0b11110, 0b10000, 0b11111],
+  'T': [0b11111, 0b00100, 0b00100, 0b00100, 0b00100],
+  'S': [0b01111, 0b10000, 0b01110, 0b00001, 0b11110],
+  'D': [0b11110, 0b10001, 0b10001, 0b10001, 0b11110],
+  'V': [0b10001, 0b10001, 0b10101, 0b01010, 0b00100],
+  '.': [0b00000, 0b00000, 0b00000, 0b00110, 0b00110],
+};
+const WORD  = 'NETNS.DEV';
+const NCHAR = WORD.length;                             // 9
+const GLYPH_W = 5, GLYPH_GAP = 1;
+const COLS = NCHAR * (GLYPH_W + GLYPH_GAP) - GLYPH_GAP; // 53 dot columns
+const ROWS = 5;
+const TEX_W = 64, TEX_H = 8;                           // power-of-two, mostly empty
+
+/* One texel per dot, x = char*5 + column, y = row. Passing null for a character
+   paints garbage segments, which is what the decrypt effect scrambles through. */
+function dotTexture(shown){
+  const buf = new Uint8Array(TEX_W * TEX_H);
+  for (let c = 0; c < NCHAR; c++){
+    const rows = shown[c] ? FONT[shown[c]] : null;
+    for (let r = 0; r < ROWS; r++){
+      const bits = rows ? rows[r] : (Math.random() * 32) | 0;
+      for (let k = 0; k < GLYPH_W; k++)
+        buf[r * TEX_W + c * GLYPH_W + k] = (bits >> (GLYPH_W - 1 - k)) & 1 ? 255 : 0;
+    }
+  }
+  return buf;
 }
 
-/* --- decrypt: title decodes from noise --- */
-const SEGS = [document.getElementById('t-name'), document.getElementById('t-tld')];
-const FINAL = ['netns', '.dev'];
-const GLYPHS = 'ABCDEF0123456789#$%&*/<>_!';
-let decoding = false;
+/* ============ title pose over time ============ */
+/* Hard cuts: each value holds until the next offset, so the tube jumps rather
+   than fades. Offsets must be strictly increasing, so collisions get nudged. */
+function cuts(points, dur){
+  const sorted = points.slice().sort((a, b) => a[0] - b[0]);
+  const out = [];
+  let prev = -1;
+  for (const p of sorted){
+    let o = clamp(p[0], 0, 1);
+    if (o <= prev) o = Math.min(1, prev + .004);
+    if (o === prev) continue;                          // no room left, drop it
+    prev = o;
+    out.push({ t: o * dur, op: p[1], jx: p[2] || 0, jy: p[3] || 0, skew: p[4] || 0 });
+  }
+  const last = out[out.length - 1];
+  if (last.t < dur) out.push({ t: dur, op: last.op, jx: last.jx, jy: last.jy, skew: last.skew });
+  return out;
+}
+
+/* --- idle broken tube -------------------------------------------------------
+   A short burst of stutters, then a long quiet stretch, then another burst. Each
+   burst draws its own length, rhythm and dip depths. Driven by timers rather than
+   animation finish events, so the loop cannot stall if an event is missed. */
+let idleTimer = null, animToken = 0, pulse = null, pulseTimer = null;
+
+function idlePose(op, jx, jy, skew){
+  T.op = op; T.jx = jx; T.jy = jy; T.skew = skew;
+}
+function idleStop(){
+  clearTimeout(idleTimer);
+  idleTimer = null;
+  idlePose(1, 0, 0, 0);
+}
+function idleStart(first){
+  if (reduced) return;
+  const token = ++animToken;
+  // after a burst hands the tube back, come round again quickly enough that the
+  // effect rotation (every 1.5-4.5s) does not continually postpone the flicker
+  idleLater(token, first ? rnd(120, 420) : rnd(900, 2600));
+}
+function idleLater(token, delay){
+  if (reduced || token !== animToken) return;
+  idleTimer = setTimeout(() => {
+    if (reduced || token !== animToken) return;
+    idleBurst(token, 4 + (Math.random() * 6 | 0));
+  }, delay);
+}
+function idleBurst(token, left){
+  if (reduced || token !== animToken) return;
+  // mostly a partial sag, occasionally a near-total dropout
+  const jitter = Math.random() < .3;
+  idlePose(
+    (Math.random() < .65 ? rnd(.35, .7) : rnd(.05, .25)).toFixed(2),
+    jitter ? rnd(-1.4, 1.4) : 0, 0, jitter ? clamp(Math.tan(rnd(-2, 2) * Math.PI / 180), -.04, .04) : 0);
+  const hold = rnd(22, 100);                          // brief dropout...
+  idleTimer = setTimeout(() => {
+    if (reduced || token !== animToken) return;
+    idlePose(1, 0, 0, 0);
+    if (left > 1) idleTimer = setTimeout(() => idleBurst(token, left - 1), rnd(45, 200));  // ...then lit
+    else idleLater(token, rnd(2000, 5200));           // quiet stretch
+  }, hold);
+}
+
+/* A one-shot stutter takes the tube over, then hands it back to the idle loop. */
+function pulseTitle(alert, build){
+  if (reduced) return;
+  const { frames, dur } = build();
+  ++animToken;                                        // retire the running idle loop
+  idleStop();
+  clearTimeout(pulseTimer);
+  pulse = { frames, dur, t0: performance.now(), alert };
+  pulseTimer = setTimeout(() => {                     // driven by the clock, not onfinish
+    pulse = null;
+    T.red = 0;
+    idleStart(false);
+  }, dur + 30);
+}
+
+/* overload: red alert stutter, strength and rhythm redrawn each time */
+function buildSurge(){
+  const dur = rnd(800, 1500);
+  const p = [[0, 1, 0, 0, 0]];
+  let t = rnd(.03, .1);
+  const n = 3 + (Math.random() * 4 | 0);
+  for (let i = 0; i < n; i++){
+    p.push([t, rnd(.12, .55), rnd(-3.5, 3.5), rnd(-2, 2), rnd(-.18, .18)]);
+    t += rnd(.04, .15);
+    p.push([t, 1, rnd(-1, 1), 0, rnd(-.03, .03)]);
+    t += rnd(.03, .13);
+  }
+  p.push([1, 1, 0, 0, 0]);
+  return { frames: cuts(p, dur), dur };
+}
+
+/* blackout: cut out, sit dead a while, then stutter back on */
+function buildCut(){
+  const dur = rnd(1300, 2300);
+  const dead = rnd(.28, .5);
+  const p = [[0, 1, 0, 0, 0], [rnd(.015, .05), 0, 0, 0, 0], [dead, 0, 0, 0, 0]];
+  let t = dead;
+  const n = 3 + (Math.random() * 5 | 0);
+  for (let i = 0; i < n; i++){
+    p.push([t, rnd(.15, .9), rnd(-1.5, 1.5), 0, rnd(-.05, .05)]);
+    p.push([t + rnd(.008, .03), 1, 0, 0, 0]);
+    t += rnd(.015, .05);
+  }
+  p.push([1, 1, 0, 0, 0]);
+  return { frames: cuts(p, dur), dur };
+}
+
+/* glitch: a couple of torn frames, thrown in random directions */
+function buildTear(){
+  const dur = rnd(300, 620);
+  const p = [[0, 1, 0, 0, 0]];
+  let t = rnd(.05, .16);
+  const n = 2 + (Math.random() * 3 | 0);
+  for (let i = 0; i < n; i++){
+    p.push([t, rnd(.2, .7), between(2, 6) * rnd(1.2, 2.4), 0, rnd(-.09, .09)]);
+    t += rnd(.08, .2);
+    p.push([t, 1, 0, 0, 0]);
+    t += rnd(.08, .2);
+  }
+  p.push([1, 1, 0, 0, 0]);
+  return { frames: cuts(p, dur), dur };
+}
+
+/* --- decrypt: dot columns resolve in a random order at a random pace --- */
+let decoding = false, texDirty = false, shownChars = [];
 function fxDecrypt(){
   if (decoding || reduced) return;
   decoding = true;
-  const t0 = performance.now(), unit = 52, span = 5 * unit, total = 8 * unit + 240;
+  const unit = rnd(38, 78);
+
+  // shuffle the lock order, then stagger it
+  const order = [...Array(NCHAR).keys()];
+  for (let i = order.length - 1; i > 0; i--){
+    const j = (Math.random() * (i + 1)) | 0;
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  const lockAt = new Array(NCHAR);
+  order.forEach((idx, rank) => { lockAt[idx] = rank * unit + rnd(0, unit * .7); });
+  const total = (NCHAR - 1) * unit + unit + 240;
+
+  const t0 = performance.now();
   (function frame(){
     const e = performance.now() - t0;
-    SEGS.forEach((el, si) => {
-      const target = FINAL[si];
-      let s = '';
-      for (let i = 0; i < target.length; i++){
-        const lockAt = si * span + i * unit;
-        s += e >= lockAt ? target[i] : GLYPHS[(Math.random() * GLYPHS.length) | 0];
-      }
-      el.textContent = s;
-    });
+    shownChars = [...WORD].map((ch, i) => e >= lockAt[i] ? ch : null);
+    texDirty = true;                                  // garbage segments still unresolved
     if (e < total) requestAnimationFrame(frame);
-    else { SEGS[0].textContent = FINAL[0]; SEGS[1].textContent = FINAL[1]; decoding = false; }
+    else { shownChars = [...WORD]; texDirty = true; decoding = false; }
   })();
 }
 
-/* --- overload / blackout / glitch: timed envelopes on the background --- */
-function fxOverload(){ FX.surge = performance.now();    pulseTitle('surge', 1000); }
-function fxBlackout(){ FX.blackout = performance.now(); pulseTitle('cut', DUR.blackout); }
-function fxGlitch(){   FX.glitch = performance.now();   pulseTitle('tear', DUR.glitch); }
+/* --- bins: background envelope + title pose, drawn fresh each time --- */
+function fxOverload(){
+  FX.surge = { t0: performance.now(), dur: rnd(2400, 3900), ramp: rnd(80, 190),
+               release: rnd(600, 1200), speed: rnd(3, 6) };
+  pulseTitle(true, buildSurge);
+}
+function fxBlackout(){
+  FX.blackout = { t0: performance.now(), dur: rnd(1400, 2400), cut: rnd(90, 200),
+                  dead: rnd(400, 800), seg: rnd(45, 95), seed: rnd(0, 997) };
+  pulseTitle(false, buildCut);
+}
+function fxGlitch(){
+  FX.glitch = { t0: performance.now(), dur: rnd(280, 560), band: rnd(10, 26),
+                rate: rnd(14, 30), mag: rnd(50, 130) };
+  pulseTitle(false, buildTear);
+}
 
 const BINS = {
   decrypt:  { desc: 'decode the title',    run: fxDecrypt },
@@ -194,8 +273,6 @@ const BINS = {
   blackout: { desc: 'cut the power',       run: fxBlackout },
   glitch:   { desc: 'tear one frame',      run: fxGlitch },
 };
-
-title.addEventListener('click', fxDecrypt);
 
 /* konami sequence → overload */
 const SEQUENCE = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
@@ -209,150 +286,61 @@ addEventListener('keydown', (e) => {
   }
 });
 
-/* --- idle rotation: one random effect every few seconds, never while the
-       console is open or the tab is hidden, and never right after the user
-       touches the page ----------------------------------------------- */
-let consoleOpen = false;                              // set by the console module
+/* --- idle rotation: one random effect every few seconds, never while the tab is
+       hidden, and never right after the user touches the page --------------- */
 let rotTimer = null;
 const ROTATION = ['decrypt', 'decrypt', 'overload', 'glitch', 'glitch', 'blackout'];
 
 function scheduleRotation(){
   clearTimeout(rotTimer);
   rotTimer = setTimeout(() => {
-    if (!document.hidden && !consoleOpen) BINS[ROTATION[(Math.random() * ROTATION.length) | 0]].run();
+    if (!document.hidden) BINS[ROTATION[(Math.random() * ROTATION.length) | 0]].run();
     scheduleRotation();
   }, 1500 + Math.random() * 3000);                    // 1.5–4.5s, stays under 5s after timer drift
 }
 if (!reduced){
+  idleStart(true);                                    // opens with a warm-up stutter
   scheduleRotation();
   // any real interaction pushes the next effect out, so it never interrupts
   ['pointerdown', 'keydown'].forEach(ev =>
-    addEventListener(ev, () => { if (!consoleOpen) scheduleRotation(); }, { passive: true }));
+    addEventListener(ev, () => scheduleRotation(), { passive: true }));
 }
 
-/* ============ devtools console ============ */
+/* ============ the controls: the browser console ============ */
+/* The page has no UI of its own, so these functions plus the click and konami
+   shortcuts are how the effects are fired. */
 (function(){
-  const tag = 'background:#00e69c;color:#04150c;font:600 12px/1.7 monospace;padding:2px 6px;border-radius:3px';
-  const dim = 'color:#1d7a54;font-family:monospace';
-  const key = 'color:#7fe8bd;font-family:monospace';
-  console.log('%c netns.dev ', tag);
-  console.log('%cpage effects — run a bin, or type / on the page.', dim);
-  console.log('%c' + Object.keys(BINS).map(n => 'netns.' + n + '()').join(' · '), key);
+  const tag  = 'background:#00e69c;color:#04150c;font:600 12px/1.7 monospace;padding:2px 6px;border-radius:3px';
+  const name = 'color:#7fe8bd;font-family:monospace';
+  const dim  = 'color:#1d7a54;font-family:monospace';
+  const line = (s, style) => console.log('%c' + s, style || name);
 
   const api = {};
-  Object.entries(BINS).forEach(([n, b]) => { api[n] = () => { b.run(); return n + ': ' + b.desc; }; });
-  window.netns = api;
-})();
-
-/* ============ slash console ============ */
-(function(){
-  const term = document.getElementById('term');
-  const out  = document.getElementById('term-out');
-  const inp  = document.getElementById('term-in');
-  let open = false, greeted = false, hist = [], hIdx = 0;
-
-  function emit(text, cls){
-    const d = document.createElement('div');
-    if (cls) d.className = cls;
-    d.textContent = text;
-    out.appendChild(d);
-    out.scrollTop = out.scrollHeight;
-  }
-  function emitCmd(v){
-    const d = document.createElement('div');
-    d.className = 't-cmd';
-    d.textContent = 'netns@dev:~$ ' + v;
-    out.appendChild(d);
-    out.scrollTop = out.scrollHeight;
-  }
-  /* `ls /bin` is how you find the effects — there is no `help` */
-  function cmdLs(v){
-    const path = v.trim().split(/\s+/)[1] || '';
-    if (path === '' || path === '/'){ emit('  bin', 't-bin'); return; }   // ~ holds one dir
-    const clean = path.replace(/\/+$/, '');
-    if (clean === '/bin' || clean === 'bin'){
-      Object.entries(BINS).forEach(([n, b]) => emit('  ' + n.padEnd(10) + b.desc, 't-bin'));
-      return;
-    }
-    emit('ls: ' + path + ': no such directory   (try ls /bin)', 't-err');
-  }
-  function cmdKeys(){
-    emit('  /       open console · ESC close', 't-bin');
-    emit('  click   the title → decrypt', 't-bin');
-    emit('  konami  \u2191\u2191\u2193\u2193\u2190\u2192\u2190\u2192BA → overload', 't-bin');
-  }
-
-  const BUILTIN = {
-    ls: cmdLs,
-    keys: cmdKeys,
-    clear(){ out.replaceChildren(); },
-    echo(v){ emit(v.replace(/^echo\s*/i, '')); },
-    date(){ emit(new Date().toString()); },
-    exit(){ close(); },
+  Object.entries(BINS).forEach(([n, b]) => {
+    api[n] = () => { b.run(); return n + ': ' + b.desc; };
+  });
+  api.help = () => {
+    line('bins', dim);
+    Object.entries(BINS).forEach(([n, b]) => console.log('%c  netns.' + n + '()  %c' + b.desc, name, dim));
+    line('triggers', dim);
+    console.log('%c  click the title  %cdecrypt', name, dim);
+    console.log('%c  \u2191\u2191\u2193\u2193\u2190\u2192\u2190\u2192BA  %coverload', name, dim);
+    line('a random bin also runs on its own every 1.5-4.5s', dim);
+    return Object.keys(BINS);
   };
+  window.netns = api;
 
-  function run(v){
-    const head = v.trim().split(/\s+/)[0].toLowerCase();
-    if (BINS[head]){ BINS[head].run(); emit(head + ': ' + BINS[head].desc, 't-dim'); return; }
-    if (BUILTIN[head]){ BUILTIN[head](v); return; }
-    emit('netns: no such bin: ' + head + '   (try ls /bin)', 't-err');
-  }
-
-  function openTerm(){
-    if (open) return;
-    open = true;
-    consoleOpen = true;                               // pause the idle rotation
-    term.classList.add('open');
-    if (!greeted){
-      greeted = true;
-      emit('netns.dev — effect console');
-      emit('type ls /bin for the bins', 't-dim');
-      emit('');
-    }
-    inp.focus();
-  }
-  function close(){
-    if (!open) return;
-    open = false;
-    consoleOpen = false;
-    term.classList.remove('open');
-    inp.blur();
-  }
-
-  addEventListener('keydown', (e) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.key === '/' && !open){ e.preventDefault(); openTerm(); }
-    else if (e.key === 'Escape' && open){ e.preventDefault(); close(); }
-  });
-
-  inp.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowUp'){
-      e.preventDefault();
-      if (hist.length) inp.value = hist[hIdx = Math.max(0, hIdx - 1)];
-      return;
-    }
-    if (e.key === 'ArrowDown'){
-      e.preventDefault();
-      inp.value = hIdx < hist.length - 1 ? hist[++hIdx] : (hIdx = hist.length, '');
-      return;
-    }
-    if (e.key !== 'Enter') return;
-    const v = inp.value.trim();
-    inp.value = '';
-    if (!v) return;
-    hist.push(v); hIdx = hist.length;
-    emitCmd(v);
-    run(v);
-    if (open) inp.focus();
-  });
+  console.log('%c netns.dev ', tag);
+  line(Object.keys(BINS).map(n => 'netns.' + n + '()').join(' · '));
+  line('netns.help() for the guide and the triggers', dim);
 })();
 
-/* ============ background shader ============ */
+/* ============ WebGL renderer ============ */
 (function(){
   const canvas = document.getElementById('bg');
   const gl = canvas.getContext('webgl', { alpha:false, antialias:false, powerPreference:'low-power' })
           || canvas.getContext('experimental-webgl');
-  if (!gl) return;                                    // plain background stays visible
+  if (!gl){ showFallback(); return; }
 
   const VS = `
     attribute vec2 a_p;
@@ -370,6 +358,12 @@ if (!reduced){
     uniform float u_surge;   // 0..1 link saturation
     uniform float u_power;   // 1 = mains on, ~0 = blackout
     uniform float u_glitch;  // 0..1 torn-frame displacement
+    uniform vec3  u_rand;    // per-load scene seed: lattice phase, lane offset, blink rate
+    uniform vec3  u_gl;      // per-run glitch shape: band height, reshuffle rate, throw
+    uniform vec2  u_cell;    // title cell size (uv) and dot radius (device px)
+    uniform vec2  u_t_jit;   // title jitter (uv)
+    uniform vec3  u_t_pose;  // title opacity, skew slope, red tint
+    uniform sampler2D u_tex; // dot-matrix title: one texel per dot
 
     float hash11(float n){ return fract(sin(n * 127.1) * 43758.5453123); }
     float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
@@ -428,33 +422,67 @@ if (!reduced){
 
     void main(){
       vec2 frag = gl_FragCoord.xy;
-      // torn frame: shove whole scanline bands sideways
+      // torn frame: shove whole scanline bands sideways; band height, reshuffle
+      // rate and throw distance are redrawn for every glitch. Because the title
+      // is sampled from this same displaced coordinate, it tears along with the
+      // background instead of being animated separately.
       if (u_glitch > .001){
-        float band = floor(frag.y / 18.);
-        frag.x += (hash11(band * 3.1 + floor(u_time * 22.) * 7.3) - .5) * 90. * u_glitch;
+        float band = floor(frag.y / u_gl.x);
+        frag.x += (hash11(band * 3.1 + floor(u_time * u_gl.y) * 7.3) - .5) * u_gl.z * u_glitch;
       }
-      vec2 uv = (frag - .5 * u_res) / u_res.y;
+      // lanes are shifted as a set so packets and their traces stay aligned
+      vec2 uv  = (frag - .5 * u_res) / u_res.y;
+      vec2 luv = uv + vec2(u_rand.y * 3.1, u_rand.y * 1.7);
       float pxsz = 1. / u_res.y;                      // one device pixel in uv units
       // #00e69c → alarm red; fully swapped at peak so the mix never goes olive
       vec3 green = mix(vec3(.0, .902, .612), vec3(1., .16, .09), u_surge);
       vec3 col = mix(vec3(.013, .055, .033), vec3(.055, .016, .013), u_surge);
       float boost = 1. + u_surge * 1.2;
 
-      // LED lattice: crisp dots, a few blink
-      vec2 gp = uv * 34.;
+      // LED lattice: crisp dots, a few blink; phase and blink rate differ per load
+      vec2 gp = luv * 34. + u_rand.xx * 17.;
       vec2 cid = floor(gp);
       vec2 cpx = (fract(gp) - .5) * (u_res.y / 34.);  // offset from dot center, pixels
-      float blink = step(.95, hash21(cid + floor(u_time * .8) * 1.7)) * .5;
-      float led = dotCore(cpx) * (.10 + .07 * hash21(cid * 1.7) + blink);
+      float blink = step(.95, hash21(cid + floor(u_time * u_rand.z) * 1.7)) * .5;
+      float led = dotCore(cpx) * (.10 + .07 * hash21(cid * 1.7 + u_rand.x) + blink);
       col += green * led * boost;
 
       // PCB traces + packet traffic (flow time accelerates under surge)
-      float tr = traceH(uv, pxsz, .17, 5.) * .030
-               + traceV(uv, pxsz, .26, 13.) * .026;
-      float pk = packetsH(uv, pxsz, u_flow, .17,  3., .60)
-               + packetsH(uv, pxsz, u_flow, .17, 41., .28)
-               + packetsV(uv, pxsz, u_flow, .26, 29., .42);
+      float tr = traceH(luv, pxsz, .17, 5.) * .030
+               + traceV(luv, pxsz, .26, 13.) * .026;
+      float pk = packetsH(luv, pxsz, u_flow, .17,  3., .60)
+               + packetsH(luv, pxsz, u_flow, .17, 41., .28)
+               + packetsV(luv, pxsz, u_flow, .26, 29., .42);
       col += green * (tr + pk * boost);
+
+      // ---- dot-matrix title ----
+      float cellPx = u_cell.x * u_res.y;
+      float tOp = u_t_pose.x;
+      if (tOp > .002){
+        vec2 lc = (uv - u_t_jit) / u_cell.x;            // title-local, in cell units
+        lc.x += lc.y * u_t_pose.y;                      // skew
+        vec2 bd = abs(lc) - vec2(53., 5.) * .5;
+        col *= 1. - .42 * tOp * (1. - smoothstep(0., 2.5, max(bd.x, bd.y)));
+
+        vec2 g = lc + vec2(53., 5.) * .5;               // 0..COLS / 0..ROWS
+        float gi = floor(g.x), gj = floor(g.y);
+        float ch  = floor(gi / 6.);                     // char index (5 wide + 1 gap)
+        float col5 = gi - ch * 6.;
+        float gRow = 4. - gj;                           // glyph rows run top-down
+        float inside = step(0., gi) * step(gi, 52.5) * step(0., gj) * step(gj, 4.5)
+                     * step(col5, 4.5) * step(ch, 8.5);
+        float dc = ch * 5. + col5;                      // dot column in the texture
+        float on = step(.5, texture2D(u_tex, vec2((dc + .5) / 64., (gRow + .5) / 8.)).r) * inside;
+
+        vec2 d = fract(g) - .5;                         // offset from the dot centre
+        float distPx = length(d) * cellPx;
+        float core = 1. - smoothstep(u_cell.y - .8, u_cell.y + .8, distPx);
+        float glow = exp(-distPx * distPx / (2. * (cellPx * .95) * (cellPx * .95)));
+        // "netns" reads brighter than the ".dev" suffix, as in the text version
+        vec3 tcol = mix(vec3(.918, 1., .961), vec3(0., .902, .612), step(4.5, ch));
+        tcol = mix(tcol, vec3(1., .16, .09), u_t_pose.z);
+        col += tcol * (core + glow * .5) * on * tOp;
+      }
 
       // vignette + fine grain
       float r = length(uv);
@@ -481,8 +509,9 @@ if (!reduced){
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw gl.getProgramInfoLog(prog);
   } catch (err){
-    console.error('netns bg shader failed:', err);
-    return;                                           // plain background fallback
+    console.error('netns shader failed, falling back to plain title:', err);
+    showFallback();
+    return;
   }
   gl.useProgram(prog);
 
@@ -493,55 +522,127 @@ if (!reduced){
   gl.enableVertexAttribArray(aP);
   gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
 
-  const uRes    = gl.getUniformLocation(prog, 'u_res');
-  const uTime   = gl.getUniformLocation(prog, 'u_time');
-  const uFlow   = gl.getUniformLocation(prog, 'u_flow');
-  const uSurge  = gl.getUniformLocation(prog, 'u_surge');
-  const uPower  = gl.getUniformLocation(prog, 'u_power');
-  const uGlitch = gl.getUniformLocation(prog, 'u_glitch');
+  const uRes   = gl.getUniformLocation(prog, 'u_res');
+  const uTime  = gl.getUniformLocation(prog, 'u_time');
+  const uFlow  = gl.getUniformLocation(prog, 'u_flow');
+  const uSurge = gl.getUniformLocation(prog, 'u_surge');
+  const uPower = gl.getUniformLocation(prog, 'u_power');
+  const uGlitch= gl.getUniformLocation(prog, 'u_glitch');
+  const uRand  = gl.getUniformLocation(prog, 'u_rand');
+  const uGl    = gl.getUniformLocation(prog, 'u_gl');
+  const uCell  = gl.getUniformLocation(prog, 'u_cell');
+  const uTJit  = gl.getUniformLocation(prog, 'u_t_jit');
+  const uTPose = gl.getUniformLocation(prog, 'u_t_pose');
+  const uTex   = gl.getUniformLocation(prog, 'u_tex');
 
-  function resize(){
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.uniform1i(uTex, 0);
+
+  shownChars = [...WORD];
+  function markTitleDirty(){ texDirty = true; }
+  markTitleDirty();
+
+  // per-load scene seed: lattice phase / lane offset / blink rate
+  gl.uniform3f(uRand, Math.random(), Math.random(), rnd(.45, 1.6));
+  gl.uniform3f(uGl, 18, 22, 90);                      // overwritten on each glitch
+
+  let cellCss = 9, resY = 0;
+  function metrics(){
     const dpr = Math.min(devicePixelRatio || 1, 2);
     canvas.width  = Math.floor(innerWidth * dpr);
     canvas.height = Math.floor(innerHeight * dpr);
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.uniform2f(uRes, canvas.width, canvas.height);
+    resY = canvas.height;
+    // shrink the grid to fit narrow screens; the block is 53 cols x 5 rows
+    cellCss = clamp(innerWidth * .38 / COLS, 4, 6.5);
+    const cellPx = cellCss * dpr;
+    gl.uniform2f(uCell, cellPx / resY, cellPx * .30);   // cell size (uv), dot radius (device px)
+    return dpr;
   }
-  addEventListener('resize', resize);
+  let dpr = 1;
+  function resize(){ dpr = metrics(); }
   resize();
+  addEventListener('resize', resize);
+
+  /* The canvas is behind the page, so the title needs its own pointer handling. */
+  function titleHit(x, y){
+    const w = COLS * cellCss, h = ROWS * cellCss;
+    const x0 = (innerWidth - w) / 2, y0 = (innerHeight - h) / 2;
+    return x >= x0 - 8 && x <= x0 + w + 8 && y >= y0 - 8 && y <= y0 + h + 8;
+  }
+  addEventListener('pointermove', (e) => {
+    document.body.style.cursor = titleHit(e.clientX, e.clientY) ? 'pointer' : '';
+  }, { passive: true });
+  addEventListener('click', (e) => {
+    if (titleHit(e.clientX, e.clientY)) fxDecrypt();
+  });
 
   const t0 = performance.now();
-  let flow = 0, last = t0;
+  let flow = 0, last = t0, lastPattern = null;
 
   function frame(now){
     const dt = Math.min((now - last) / 1000, .1);
     last = now;
-    let e;
 
-    // saturation envelope: fast ramp in, hold, smooth release
+    // each envelope reads the shape its bin drew when it fired
     let surge = 0;
-    e = now - FX.surge;
-    if (e >= 0 && e < DUR.surge)
-      surge = Math.min(e / 120, 1) * Math.min(1, Math.max(0, (DUR.surge - e) / 800));
+    const S = FX.surge;
+    if (S){
+      const e = now - S.t0;
+      if (e >= 0 && e < S.dur)
+        surge = Math.min(e / S.ramp, 1) * Math.min(1, Math.max(0, (S.dur - e) / S.release));
+      else FX.surge = null;
+    }
 
-    // blackout: instant cut, dead hold, stuttering restart
     let power = 1;
-    e = now - FX.blackout;
-    if (e >= 0 && e < DUR.blackout){
-      if (e < 140) power = 1 - e / 140;
-      else if (e < 620) power = .015;
-      else {
-        const seg = Math.floor((e - 620) / 70);
-        const r = Math.abs(Math.sin(seg * 12.9898) * 43758.5453) % 1;
-        power = r < .45 ? .02 : (.35 + r * .65);
+    const B = FX.blackout;
+    if (B){
+      const e = now - B.t0;
+      if (e >= 0 && e < B.dur){
+        if (e < B.cut) power = 1 - e / B.cut;
+        else if (e < B.cut + B.dead) power = .015;
+        else {
+          const seg = Math.floor((e - B.cut - B.dead) / B.seg);
+          const r = Math.abs(Math.sin(seg * 12.9898 + B.seed) * 43758.5453) % 1;
+          power = r < .45 ? .02 : (.35 + r * .65);
+        }
+      } else FX.blackout = null;
+    }
+
+    let glitch = 0;
+    const G = FX.glitch;
+    if (G){
+      const e = now - G.t0;
+      if (e >= 0 && e < G.dur){
+        glitch = (Math.floor(e / (G.dur / 4)) % 2 === 0 ? 1 : .3) * (1 - e / G.dur);
+        gl.uniform3f(uGl, G.band, G.rate, G.mag);
+      } else FX.glitch = null;
+    }
+
+    // one-shot title stutter takes over the pose; otherwise the idle loop owns it
+    if (pulse){
+      const e = now - pulse.t0;
+      const f = pulse.frames;
+      if (e >= 0 && e < pulse.dur){
+        let i = 0;
+        while (i < f.length - 1 && f[i + 1].t <= e) i++;
+        T.op = f[i].op; T.jx = f[i].jx; T.jy = f[i].jy; T.skew = f[i].skew;
+        T.red = pulse.alert ? 1 : 0;
       }
     }
 
-    // glitch: two or three torn frames, decaying
-    let glitch = 0;
-    e = now - FX.glitch;
-    if (e >= 0 && e < DUR.glitch)
-      glitch = (Math.floor(e / 60) % 2 === 0 ? 1 : .3) * (1 - e / DUR.glitch);
+    if (texDirty){
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, TEX_W, TEX_H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE,
+                    dotTexture(shownChars));
+      texDirty = false;
+    }
 
     flow += dt * (1 + 4 * surge);                     // packets speed up, no phase jump
     gl.uniform1f(uTime,  (now - t0) / 1000);
@@ -549,15 +650,21 @@ if (!reduced){
     gl.uniform1f(uSurge, surge);
     gl.uniform1f(uPower, power);
     gl.uniform1f(uGlitch, glitch);
+    gl.uniform2f(uTJit, T.jx * dpr / resY, T.jy * dpr / resY);
+    gl.uniform3f(uTPose, T.op, T.skew, T.red);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   if (reduced){                                       // one static frame, no effects
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, TEX_W, TEX_H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE,
+                  dotTexture([...WORD]));
     gl.uniform1f(uTime, 0);
     gl.uniform1f(uFlow, 0);
     gl.uniform1f(uSurge, 0);
     gl.uniform1f(uPower, 1);
     gl.uniform1f(uGlitch, 0);
+    gl.uniform2f(uTJit, 0, 0);
+    gl.uniform3f(uTPose, 1, 0, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return;
   }
@@ -578,6 +685,14 @@ if (!reduced){
     }
   });
 })();
+
+/* Reveal the plain DOM heading when the shader cannot run, so the page still
+   shows its name (background effects keep working where they can). */
+function showFallback(){
+  const t = document.getElementById('title');
+  t.classList.add('fallback');
+  t.addEventListener('click', fxDecrypt);
+}
 </script>
 </body>
 </html>
