@@ -346,22 +346,38 @@ if (!reduced){
   const MAP_COLS = 89, MAP_ROWS = 45;
   const MAP_MASK = 'AAAADwAAAAAAAAAAHv/4YAHAgAOAAAQJz4AQAQAAADAABgIgIAgAAAwH5gAAc34IOAAMAGwA///GccRgADnX1AAABgBow0DAKhQEAAADAEHAQABqAAAAAB+AEFgAAQyAAAAAEEAHQwABDYAAAAAQEABDAAB5AAAAAAYEAAJgACEGMAAAAgIAAYAAD2TkAAAGAQADAAAcbJoAADwAgAIAAAwF9QAAIiAgAwAAA+ERAAAJYAweAAACCRCAAAJAARAAAAIDeLAAAQAAUEAAAgAKJwADAAAYYAACAAKMQ4YAAA6CAACAAUQSJAAAAeAAAIAAXAYKEAAAGAAAQAAQAwaEAAAE+AAQgAYBAogAAACCAAewAQAAgQAAAEDAAAQBAADMAAAAQCAABAEAACYgAAAgDwABAQAAGUcAAAgAQABAgAADAOAABABAACBAAAAACAABAEAAECAAAAGAAABAIAAQNgAAAygAABAQAAQjAAACCgAACDAAAgmAAAYAgAAIIAABCAAAAgBAAAQQAABIAAAAnCAAAhAAADgAAABxEAABMAAAAAAAAAB4AACgAAAAAAAAAAAAAKAAAAAAAAAABAAAUAAAAAAAAAAAAAAoAAAAAAAAAAAAABgAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
-  /* Cables between the ports, in world cells (cell centres = col+0.5, row+0.5).
-     Endpoints were snapped to the nearest coastline cell, and the bow of each arc
-     was then chosen by searching for a value that keeps the whole route over open
-     water — at this resolution a cable has to round a continent, not cut across
-     it, so every route here was verified to clear every land cell along its path. */
+  /* Cables, as a chain of short legs between repeated landing stations — the way
+     real submarine systems are built (Sydney–Perth–Singapore, Cape Town–Durban–
+     Mombasa–Djibouti, and so on) rather than one arc across each ocean. Endpoints
+     were snapped to the nearest coastline cell and each leg's bow was then found by
+     searching for a value that keeps the whole span over open water; every leg below
+     was verified to cross zero land cells. A leg whose b.x exceeds 89 runs off the
+     right edge of the map and continues from the left, which is how the Pacific
+     routes are drawn even though the ocean itself was cropped away. */
   const MAP_LINKS = [
-    [22.5, 37.5, 87.5, 36.5,   5.92],   // buenos aires – sydney
-    [20.5, 12.5, 87.5, 36.5,  15.12],   // halifax      – sydney
-    [17.5, 13.5, 46.5, 36.5,   0.00],   // new york     – cape town
-    [22.5, 37.5, 65.5, 22.5,  11.06],   // buenos aires – chennai
-    [18.5, 36.5,  0.5,  9.5,  -4.93],   // valparaiso   – honolulu
-    [14.5, 22.5, 34.5,  6.5,  -0.78],   // panama       – reykjavik
-    [52.5, 27.5, 77.5, 35.5,   1.59],   // mombasa      – perth
-    [84.5, 14.5, 87.5, 29.5,  -0.93],   // tokyo        – auckland
-    [35.5, 21.5, 34.5,  6.5,  -2.74],   // dakar        – reykjavik
-    [14.5, 22.5, 28.5, 27.5,  -3.16],   // panama       – fortaleza
+    [84.5, 14.5,  91.5, 14.5,   0.00],   // tokyo        → (pacific seam) → san francisco
+    [78.5, 16.5,  92.5, 15.5,   1.54],   // shanghai     → (pacific seam) → los angeles
+    [17.5, 13.5,  20.5, 12.5,   0.00],   // new york     → halifax
+    [20.5, 12.5,  34.5,  6.5,   1.68],   // halifax      → reykjavik
+    [34.5,  6.5,  39.5, 11.5,   0.29],   // reykjavik    → brest
+    [15.5, 18.5,  17.5, 13.5,   0.81],   // miami        → new york
+    [28.5, 27.5,  35.5, 21.5,   0.00],   // fortaleza    → dakar
+    [35.5, 21.5,  38.5, 13.5,  -2.70],   // dakar        → lisbon
+    [26.5, 33.5,  41.5, 23.5,   2.48],   // sao paulo    → lagos
+    [41.5, 23.5,  46.5, 36.5,   2.68],   // lagos        → cape town
+    [46.5, 36.5,  50.5, 34.5,   1.72],   // cape town    → durban
+    [50.5, 34.5,  50.5, 35.5,   0.00],   // durban       → (bend)
+    [50.5, 35.5,  52.5, 27.5,   2.15],   // (bend)       → mombasa
+    [52.5, 27.5,  54.5, 21.5,   3.48],   // mombasa      → djibouti
+    [54.5, 21.5,  56.5, 22.5,   0.00],   // djibouti     → (bend)
+    [56.5, 22.5,  63.5, 20.5,   0.00],   // (bend)       → mumbai
+    [63.5, 20.5,  64.5, 23.5,   0.00],   // mumbai       → colombo
+    [64.5, 23.5,  72.5, 24.5,   0.00],   // colombo      → singapore
+    [72.5, 24.5,  76.5, 18.5,   1.69],   // singapore    → hong kong
+    [76.5, 18.5,  84.5, 14.5,   1.72],   // hong kong    → tokyo
+    [87.5, 36.5,  77.5, 35.5,  -3.45],   // sydney       → perth
+    [77.5, 35.5,  72.5, 24.5,  -3.99],   // perth        → singapore
+    [39.5, 11.5,  34.5,  6.5,  -0.29],   // brest        → reykjavik
   ];
 
   const canvas = document.getElementById('bg');
@@ -396,14 +412,41 @@ if (!reduced){
                              // map dots can never outgrow the logo
     uniform vec2  u_morig;   // uv of the map's top-left corner (uv.y grows upward)
     uniform sampler2D u_map; // world mask: r = coastline, a = port (one texel per cell)
-    uniform vec4  u_links[10];   // cable endpoints, in world cells
-    uniform vec4  u_lparam[10];  // per cable: arc height, speed, phase, brightness
+    uniform vec4  u_links[23];   // cable legs, in world cells (endpoints may exceed 89)
+    uniform vec4  u_lparam[23];  // per leg: arc height, speed, phase, brightness
 
     float hash11(float n){ return fract(sin(n * 127.1) * 43758.5453123); }
     float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
 
     // crisp LED dot with an explicit radius, in device pixels
     float dotR(float dpx, float rad){ return 1. - smoothstep(rad - .9, rad + .9, dpx); }
+
+    // One cable leg sampled at point p: a faint cable plus one light pulse
+    // travelling from a to b. P holds arc height, speed, phase and brightness.
+    float legAt(vec2 p, vec4 L, vec4 P){
+      vec2 a = L.xy, b = L.zw;
+      vec2 ba = b - a;
+      float len = length(ba);
+      if (len < .001) return 0.;
+      vec2 dir = ba / len;
+      vec2 rel = p - a;
+      float along = dot(rel, dir);
+      if (along < -2. || along > len + 2.) return 0.;
+      float tn = along / len;
+      // the cable bows outwards, so long-haul runs follow a rounded sea lane
+      float arcOff = sin(clamp(tn, 0., 1.) * 3.14159265) * P.x;
+      float dcPx = abs(dot(rel, vec2(-dir.y, dir.x)) - arcOff) * u_mcell.x * u_res.y;
+      float cable = (1. - smoothstep(.45, 1.5, dcPx)) * .085;
+      float u = fract(u_flow * P.y + P.z);
+      float back = (u - tn) * len;                    // >0 once the head has passed
+      float front = smoothstep(-.5, .5, back);        // nothing glows ahead of the head
+      // Light travels inside the fibre, so it stays a compact pulse hugging the
+      // cable instead of dragging a long comet tail. The tail here is ~0.4 cells
+      // (a few pixels) and the halo barely reaches past the cable's own width.
+      float pulse = (exp(-max(back, 0.) * 5.5) * .9 + exp(-back * back * 4.) * 2.2) * front;
+      float prof = dotR(dcPx, 1.15) + exp(-dcPx * dcPx * 1.1) * .12;
+      return (cable + pulse * prof) * P.w;
+    }
 
     void main(){
       vec2 frag = gl_FragCoord.xy;
@@ -443,29 +486,15 @@ if (!reduced){
       col += green * (amb + (coast * mp.r * .34 + port * mp.a * .68 * pulse)) * boost;
 
       // ---- traffic between regions: fixed cables, one packet each ----
+      // Each cable is a chain of short legs that land at repeated stations, the way
+      // real submarine systems are built, rather than one long arc across an ocean.
       float pk = 0.;
-      for (int i = 0; i < 10; i++){
-        vec4 L = u_links[i];
-        vec4 P = u_lparam[i];
-        vec2 a = L.xy, b = L.zw;
-        vec2 ba = b - a;
-        float len = length(ba);
-        vec2 dir = ba / len;
-        vec2 rel = mg - a;
-        float along = dot(rel, dir);
-        if (along > -2. && along < len + 2.){
-          float tn = along / len;
-          // the cable bows outwards, so long-haul routes read as arcs
-          float arcOff = sin(clamp(tn, 0., 1.) * 3.14159265) * P.x;
-          float dcPx = abs(dot(rel, vec2(-dir.y, dir.x)) - arcOff) * mapCellPx;
-          float cable = (1. - smoothstep(.45, 1.5, dcPx)) * .085;
-          float u = fract(u_flow * P.y + P.z);
-          float back = (u - tn) * len;                // >0 once the head has passed
-          float front = smoothstep(-.7, .7, back);    // nothing glows ahead of the head
-          float comet = (exp(-max(back, 0.) * 1.4) * .85 + exp(-back * back * 1.1) * 2.4) * front;
-          float prof = dotR(dcPx, 1.05) + exp(-dcPx * dcPx * .25) * .22;
-          pk += (cable + comet * prof) * P.w;
-        }
+      for (int i = 0; i < 23; i++){
+        pk += legAt(mg, u_links[i], u_lparam[i]);
+        // A leg that runs past the right edge is also evaluated one map width to
+        // the left, so the Pacific routes leave the frame and come back in on the
+        // other side instead of stopping at the seam.
+        if (u_links[i].z > 89.) pk += legAt(mg + vec2(89., 0.), u_links[i], u_lparam[i]);
       }
       col += green * pk * boost;
 
