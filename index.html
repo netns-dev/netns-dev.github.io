@@ -19,10 +19,11 @@
     display:grid; place-items:center;
     padding:24px;
   }
-  canvas{ position:fixed; inset:0; width:100%; height:100%; z-index:-1; display:block; image-rendering:auto; }
+  canvas{ position:fixed; inset:0; width:100%; height:100%; z-index:-1; display:block; }
+
   h1{
     font-size:2rem; font-weight:600; letter-spacing:.02em;
-    color:#eafff5;
+    color:#eafff5; cursor:pointer; user-select:none;
     text-shadow:
       0 0 8px rgba(0,230,156,.85),
       0 0 24px rgba(0,230,156,.55),
@@ -45,16 +46,308 @@
     57%   { opacity:.5; }
     83%   { opacity:.35; }
   }
+  /* overload: link saturation — red alert stutter */
+  h1.surge{
+    color:#ffe9e6;
+    text-shadow:0 0 8px rgba(255,90,70,.9), 0 0 26px rgba(255,90,70,.6), 0 0 60px rgba(255,90,70,.4);
+    animation:surge .95s steps(1,end) 1;
+  }
+  h1.surge span{ color:#ff5a46; }
+  @keyframes surge{
+    0%  { opacity:1;   transform:translate(0,0); }
+    12% { opacity:.25; transform:translate(-2px,1px) skewX(-8deg); }
+    20% { opacity:1;   transform:translate(2px,-1px) skewX(6deg); }
+    32% { opacity:.4;  transform:translate(-1px,0) skewX(-4deg); }
+    44% { opacity:1;   transform:translate(1px,0); }
+    60% { opacity:.6;  transform:translate(0,1px) skewX(3deg); }
+    75%,100%{ opacity:1; transform:translate(0,0); }
+  }
+  /* blackout: power cut, then the tube stutters back on */
+  h1.cut{ animation:cut 1.7s steps(1,end) 1; }
+  @keyframes cut{
+    0%  { opacity:1; }
+    8%  { opacity:0; }
+    36% { opacity:0; }
+    40% { opacity:.6; }
+    44% { opacity:.05; }
+    48% { opacity:1; }
+    52% { opacity:.2; }
+    56% { opacity:1; }
+    100%{ opacity:1; }
+  }
+  /* glitch: one torn frame */
+  h1.tear{ animation:tear .42s steps(1,end) 1; }
+  @keyframes tear{
+    0%  { opacity:1;  transform:translate(0,0); }
+    14% { opacity:.35; transform:translate(-6px,0); }
+    28% { opacity:1;  transform:translate(5px,0); }
+    42% { opacity:.5;  transform:translate(-3px,0); }
+    60% { opacity:1;  transform:translate(2px,0); }
+    100%{ opacity:1;  transform:translate(0,0); }
+  }
+
+  /* ---------- slash terminal ---------- */
+  .term{
+    position:fixed; left:50%; bottom:0; z-index:10;
+    width:min(620px,94vw);
+    background:rgba(2,14,8,.94);
+    border:1px solid rgba(0,230,156,.4); border-bottom:none;
+    border-radius:10px 10px 0 0;
+    box-shadow:0 0 30px rgba(0,230,156,.14);
+    padding:12px 14px 10px;
+    transform:translate(-50%,105%);
+    opacity:0; pointer-events:none;
+    transition:transform .28s cubic-bezier(.2,.8,.2,1), opacity .28s;
+  }
+  .term.open{ transform:translate(-50%,0); opacity:1; pointer-events:auto; }
+  /* short enough to sit below the centred title, so the title never moves */
+  #term-out{
+    max-height:min(26vh,190px); overflow:auto; scrollbar-width:none;
+    font-size:clamp(11.5px,1.6vw,13px); line-height:1.6;
+    white-space:pre-wrap; text-shadow:0 0 5px rgba(0,230,156,.35);
+  }
+  #term-out::-webkit-scrollbar{ display:none; }
+  .t-cmd{ color:#eafff5; } .t-dim{ color:#1d7a54; }
+  .t-bin{ color:#a5ffd2; } .t-err{ color:#ff7f66; }
+  .term-line{ display:flex; align-items:center; gap:6px; margin-top:10px; }
+  .pp{ color:#eafff5; } .pp1{ color:#1d7a54; } .pp2{ color:#00e69c; }
+  #term-in{
+    flex:1; background:transparent; border:none; outline:none;
+    color:#eafff5; font:inherit; caret-color:#00e69c;
+  }
+  .term-hint{ margin-top:8px; font-size:11px; letter-spacing:.14em; color:#1d7a54; }
+  /* on short screens keep the panel low enough that it can never reach the title */
+  @media (max-height: 620px){
+    #term-out{ max-height:min(20vh,140px); }
+  }
+
   @media (prefers-reduced-motion: reduce){
-    h1{ animation:none; }
+    h1, h1.surge, h1.cut, h1.tear{ animation:none; }
+    .term{ transition:none; }
   }
 </style>
 </head>
 <body>
   <canvas id="bg" aria-hidden="true"></canvas>
-  <h1>netns<span>.dev</span></h1>
+  <h1 id="title"><span id="t-name">netns</span><span id="t-tld">.dev</span></h1>
+
+  <div class="term" id="term" role="dialog" aria-label="netns effect console">
+    <div id="term-out"></div>
+    <div class="term-line">
+      <span class="pp">netns@dev</span><span class="pp1">:</span><span class="pp2">~</span><span class="pp1">$</span>
+      <input id="term-in" autocomplete="off" spellcheck="false" aria-label="command">
+    </div>
+    <p class="term-hint">[ ESC ] CLOSE&nbsp;&nbsp;·&nbsp;&nbsp;TYPE <span style="color:#7fe8bd">ls /bin</span> FOR BINS</p>
+  </div>
 
 <script>
+/* ============ effect bins ============ */
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* timers read by the renderer each frame */
+const FX  = { surge: -1e9, blackout: -1e9, glitch: -1e9 };
+const DUR = { surge: 3000, blackout: 1700, glitch: 420 };
+
+const title = document.getElementById('title');
+let pulseTimer = null;
+function pulseTitle(cls, ms){
+  title.classList.remove('surge', 'cut', 'tear');
+  void title.offsetWidth;                              // restart the keyframes
+  title.classList.add(cls);
+  clearTimeout(pulseTimer);
+  pulseTimer = setTimeout(() => title.classList.remove(cls), ms);
+}
+
+/* --- decrypt: title decodes from noise --- */
+const SEGS = [document.getElementById('t-name'), document.getElementById('t-tld')];
+const FINAL = ['netns', '.dev'];
+const GLYPHS = 'ABCDEF0123456789#$%&*/<>_!';
+let decoding = false;
+function fxDecrypt(){
+  if (decoding || reduced) return;
+  decoding = true;
+  const t0 = performance.now(), unit = 52, span = 5 * unit, total = 8 * unit + 240;
+  (function frame(){
+    const e = performance.now() - t0;
+    SEGS.forEach((el, si) => {
+      const target = FINAL[si];
+      let s = '';
+      for (let i = 0; i < target.length; i++){
+        const lockAt = si * span + i * unit;
+        s += e >= lockAt ? target[i] : GLYPHS[(Math.random() * GLYPHS.length) | 0];
+      }
+      el.textContent = s;
+    });
+    if (e < total) requestAnimationFrame(frame);
+    else { SEGS[0].textContent = FINAL[0]; SEGS[1].textContent = FINAL[1]; decoding = false; }
+  })();
+}
+
+/* --- overload / blackout / glitch: timed envelopes on the background --- */
+function fxOverload(){ FX.surge = performance.now();    pulseTitle('surge', 1000); }
+function fxBlackout(){ FX.blackout = performance.now(); pulseTitle('cut', DUR.blackout); }
+function fxGlitch(){   FX.glitch = performance.now();   pulseTitle('tear', DUR.glitch); }
+
+const BINS = {
+  decrypt:  { desc: 'decode the title',    run: fxDecrypt },
+  overload: { desc: 'saturate the link',   run: fxOverload },
+  blackout: { desc: 'cut the power',       run: fxBlackout },
+  glitch:   { desc: 'tear one frame',      run: fxGlitch },
+};
+
+title.addEventListener('click', fxDecrypt);
+
+/* konami sequence → overload */
+const SEQUENCE = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
+let seqIdx = 0;
+addEventListener('keydown', (e) => {
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (k === SEQUENCE[seqIdx]){
+    if (++seqIdx === SEQUENCE.length){ seqIdx = 0; fxOverload(); }
+  } else {
+    seqIdx = (k === SEQUENCE[0]) ? 1 : 0;
+  }
+});
+
+/* --- idle rotation: one random effect every few seconds, never while the
+       console is open or the tab is hidden, and never right after the user
+       touches the page ----------------------------------------------- */
+let consoleOpen = false;                              // set by the console module
+let rotTimer = null;
+const ROTATION = ['decrypt', 'decrypt', 'overload', 'glitch', 'glitch', 'blackout'];
+
+function scheduleRotation(){
+  clearTimeout(rotTimer);
+  rotTimer = setTimeout(() => {
+    if (!document.hidden && !consoleOpen) BINS[ROTATION[(Math.random() * ROTATION.length) | 0]].run();
+    scheduleRotation();
+  }, 1500 + Math.random() * 3000);                    // 1.5–4.5s, stays under 5s after timer drift
+}
+if (!reduced){
+  scheduleRotation();
+  // any real interaction pushes the next effect out, so it never interrupts
+  ['pointerdown', 'keydown'].forEach(ev =>
+    addEventListener(ev, () => { if (!consoleOpen) scheduleRotation(); }, { passive: true }));
+}
+
+/* ============ devtools console ============ */
+(function(){
+  const tag = 'background:#00e69c;color:#04150c;font:600 12px/1.7 monospace;padding:2px 6px;border-radius:3px';
+  const dim = 'color:#1d7a54;font-family:monospace';
+  const key = 'color:#7fe8bd;font-family:monospace';
+  console.log('%c netns.dev ', tag);
+  console.log('%cpage effects — run a bin, or type / on the page.', dim);
+  console.log('%c' + Object.keys(BINS).map(n => 'netns.' + n + '()').join(' · '), key);
+
+  const api = {};
+  Object.entries(BINS).forEach(([n, b]) => { api[n] = () => { b.run(); return n + ': ' + b.desc; }; });
+  window.netns = api;
+})();
+
+/* ============ slash console ============ */
+(function(){
+  const term = document.getElementById('term');
+  const out  = document.getElementById('term-out');
+  const inp  = document.getElementById('term-in');
+  let open = false, greeted = false, hist = [], hIdx = 0;
+
+  function emit(text, cls){
+    const d = document.createElement('div');
+    if (cls) d.className = cls;
+    d.textContent = text;
+    out.appendChild(d);
+    out.scrollTop = out.scrollHeight;
+  }
+  function emitCmd(v){
+    const d = document.createElement('div');
+    d.className = 't-cmd';
+    d.textContent = 'netns@dev:~$ ' + v;
+    out.appendChild(d);
+    out.scrollTop = out.scrollHeight;
+  }
+  /* `ls /bin` is how you find the effects — there is no `help` */
+  function cmdLs(v){
+    const path = v.trim().split(/\s+/)[1] || '';
+    if (path === '' || path === '/'){ emit('  bin', 't-bin'); return; }   // ~ holds one dir
+    const clean = path.replace(/\/+$/, '');
+    if (clean === '/bin' || clean === 'bin'){
+      Object.entries(BINS).forEach(([n, b]) => emit('  ' + n.padEnd(10) + b.desc, 't-bin'));
+      return;
+    }
+    emit('ls: ' + path + ': no such directory   (try ls /bin)', 't-err');
+  }
+  function cmdKeys(){
+    emit('  /       open console · ESC close', 't-bin');
+    emit('  click   the title → decrypt', 't-bin');
+    emit('  konami  \u2191\u2191\u2193\u2193\u2190\u2192\u2190\u2192BA → overload', 't-bin');
+  }
+
+  const BUILTIN = {
+    ls: cmdLs,
+    keys: cmdKeys,
+    clear(){ out.replaceChildren(); },
+    echo(v){ emit(v.replace(/^echo\s*/i, '')); },
+    date(){ emit(new Date().toString()); },
+    exit(){ close(); },
+  };
+
+  function run(v){
+    const head = v.trim().split(/\s+/)[0].toLowerCase();
+    if (BINS[head]){ BINS[head].run(); emit(head + ': ' + BINS[head].desc, 't-dim'); return; }
+    if (BUILTIN[head]){ BUILTIN[head](v); return; }
+    emit('netns: no such bin: ' + head + '   (try ls /bin)', 't-err');
+  }
+
+  function openTerm(){
+    if (open) return;
+    open = true;
+    consoleOpen = true;                               // pause the idle rotation
+    term.classList.add('open');
+    if (!greeted){
+      greeted = true;
+      emit('netns.dev — effect console');
+      emit('type ls /bin for the bins', 't-dim');
+      emit('');
+    }
+    inp.focus();
+  }
+  function close(){
+    if (!open) return;
+    open = false;
+    consoleOpen = false;
+    term.classList.remove('open');
+    inp.blur();
+  }
+
+  addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === '/' && !open){ e.preventDefault(); openTerm(); }
+    else if (e.key === 'Escape' && open){ e.preventDefault(); close(); }
+  });
+
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp'){
+      e.preventDefault();
+      if (hist.length) inp.value = hist[hIdx = Math.max(0, hIdx - 1)];
+      return;
+    }
+    if (e.key === 'ArrowDown'){
+      e.preventDefault();
+      inp.value = hIdx < hist.length - 1 ? hist[++hIdx] : (hIdx = hist.length, '');
+      return;
+    }
+    if (e.key !== 'Enter') return;
+    const v = inp.value.trim();
+    inp.value = '';
+    if (!v) return;
+    hist.push(v); hIdx = hist.length;
+    emitCmd(v);
+    run(v);
+    if (open) inp.focus();
+  });
+})();
+
+/* ============ background shader ============ */
 (function(){
   const canvas = document.getElementById('bg');
   const gl = canvas.getContext('webgl', { alpha:false, antialias:false, powerPreference:'low-power' })
@@ -72,7 +365,11 @@
     precision mediump float;
     #endif
     uniform vec2 u_res;
-    uniform float u_time;
+    uniform float u_time;    // real seconds — LED blink, decay
+    uniform float u_flow;    // accelerated seconds — packet travel (u_surge speeds this up)
+    uniform float u_surge;   // 0..1 link saturation
+    uniform float u_power;   // 1 = mains on, ~0 = blackout
+    uniform float u_glitch;  // 0..1 torn-frame displacement
 
     float hash11(float n){ return fract(sin(n * 127.1) * 43758.5453123); }
     float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
@@ -131,33 +428,40 @@
 
     void main(){
       vec2 frag = gl_FragCoord.xy;
+      // torn frame: shove whole scanline bands sideways
+      if (u_glitch > .001){
+        float band = floor(frag.y / 18.);
+        frag.x += (hash11(band * 3.1 + floor(u_time * 22.) * 7.3) - .5) * 90. * u_glitch;
+      }
       vec2 uv = (frag - .5 * u_res) / u_res.y;
       float pxsz = 1. / u_res.y;                      // one device pixel in uv units
-      float t = u_time;
-      vec3 green = vec3(.0, .902, .612);              // #00e69c
-      vec3 col = vec3(.013, .055, .033);              // deep green-black
+      // #00e69c → alarm red; fully swapped at peak so the mix never goes olive
+      vec3 green = mix(vec3(.0, .902, .612), vec3(1., .16, .09), u_surge);
+      vec3 col = mix(vec3(.013, .055, .033), vec3(.055, .016, .013), u_surge);
+      float boost = 1. + u_surge * 1.2;
 
       // LED lattice: crisp dots, a few blink
       vec2 gp = uv * 34.;
       vec2 cid = floor(gp);
       vec2 cpx = (fract(gp) - .5) * (u_res.y / 34.);  // offset from dot center, pixels
-      float blink = step(.95, hash21(cid + floor(t * .8))) * .5;
+      float blink = step(.95, hash21(cid + floor(u_time * .8) * 1.7)) * .5;
       float led = dotCore(cpx) * (.10 + .07 * hash21(cid * 1.7) + blink);
-      col += green * led;
+      col += green * led * boost;
 
-      // PCB traces + packet traffic
+      // PCB traces + packet traffic (flow time accelerates under surge)
       float tr = traceH(uv, pxsz, .17, 5.) * .030
                + traceV(uv, pxsz, .26, 13.) * .026;
-      float pk = packetsH(uv, pxsz, t, .17,  3., .60)
-               + packetsH(uv, pxsz, t, .17, 41., .28)
-               + packetsV(uv, pxsz, t, .26, 29., .42);
-      col += green * (tr + pk);
+      float pk = packetsH(uv, pxsz, u_flow, .17,  3., .60)
+               + packetsH(uv, pxsz, u_flow, .17, 41., .28)
+               + packetsV(uv, pxsz, u_flow, .26, 29., .42);
+      col += green * (tr + pk * boost);
 
       // vignette + fine grain
       float r = length(uv);
       col *= 1. - r * .5;
-      col += (hash21(frag + fract(t)) * 2. - 1.) * .006;
+      col += (hash21(frag + fract(u_time)) * 2. - 1.) * .006;
 
+      col *= u_power;                                 // mains switch
       gl_FragColor = vec4(col, 1.);
     }
   `;
@@ -189,8 +493,12 @@
   gl.enableVertexAttribArray(aP);
   gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
 
-  const uRes  = gl.getUniformLocation(prog, 'u_res');
-  const uTime = gl.getUniformLocation(prog, 'u_time');
+  const uRes    = gl.getUniformLocation(prog, 'u_res');
+  const uTime   = gl.getUniformLocation(prog, 'u_time');
+  const uFlow   = gl.getUniformLocation(prog, 'u_flow');
+  const uSurge  = gl.getUniformLocation(prog, 'u_surge');
+  const uPower  = gl.getUniformLocation(prog, 'u_power');
+  const uGlitch = gl.getUniformLocation(prog, 'u_glitch');
 
   function resize(){
     const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -202,20 +510,72 @@
   addEventListener('resize', resize);
   resize();
 
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const t0 = performance.now();
-  function draw(){
-    gl.uniform1f(uTime, (performance.now() - t0) / 1000);
+  let flow = 0, last = t0;
+
+  function frame(now){
+    const dt = Math.min((now - last) / 1000, .1);
+    last = now;
+    let e;
+
+    // saturation envelope: fast ramp in, hold, smooth release
+    let surge = 0;
+    e = now - FX.surge;
+    if (e >= 0 && e < DUR.surge)
+      surge = Math.min(e / 120, 1) * Math.min(1, Math.max(0, (DUR.surge - e) / 800));
+
+    // blackout: instant cut, dead hold, stuttering restart
+    let power = 1;
+    e = now - FX.blackout;
+    if (e >= 0 && e < DUR.blackout){
+      if (e < 140) power = 1 - e / 140;
+      else if (e < 620) power = .015;
+      else {
+        const seg = Math.floor((e - 620) / 70);
+        const r = Math.abs(Math.sin(seg * 12.9898) * 43758.5453) % 1;
+        power = r < .45 ? .02 : (.35 + r * .65);
+      }
+    }
+
+    // glitch: two or three torn frames, decaying
+    let glitch = 0;
+    e = now - FX.glitch;
+    if (e >= 0 && e < DUR.glitch)
+      glitch = (Math.floor(e / 60) % 2 === 0 ? 1 : .3) * (1 - e / DUR.glitch);
+
+    flow += dt * (1 + 4 * surge);                     // packets speed up, no phase jump
+    gl.uniform1f(uTime,  (now - t0) / 1000);
+    gl.uniform1f(uFlow,  flow);
+    gl.uniform1f(uSurge, surge);
+    gl.uniform1f(uPower, power);
+    gl.uniform1f(uGlitch, glitch);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
-  if (reduced){ draw(); return; }                     // one static frame
 
-  let raf;
-  function loop(){ draw(); raf = requestAnimationFrame(loop); }
-  loop();
+  if (reduced){                                       // one static frame, no effects
+    gl.uniform1f(uTime, 0);
+    gl.uniform1f(uFlow, 0);
+    gl.uniform1f(uSurge, 0);
+    gl.uniform1f(uPower, 1);
+    gl.uniform1f(uGlitch, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    return;
+  }
+
+  let raf = requestAnimationFrame(function loop(now){
+    frame(now);
+    raf = requestAnimationFrame(loop);
+  });
   document.addEventListener('visibilitychange', function(){
-    if (document.hidden){ cancelAnimationFrame(raf); }
-    else loop();
+    if (document.hidden){
+      cancelAnimationFrame(raf);
+    } else {
+      last = performance.now();
+      raf = requestAnimationFrame(function loop(now){
+        frame(now);
+        raf = requestAnimationFrame(loop);
+      });
+    }
   });
 })();
 </script>
