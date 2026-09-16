@@ -337,6 +337,33 @@ if (!reduced){
 
 /* ============ WebGL renderer ============ */
 (function(){
+  /* World grid. The mask is a coastline-only raster of Natural Earth 110m land
+     (public domain), 89 x 45 cells, cropped to 130°W–155°E and 85°N–60°S: the
+     Pacific is dropped so the landmasses sit closer together and fill the frame.
+     Both cut lines fall in open ocean, so no continent is sliced. Packed one bit
+     per cell, row-major from the north-west. The grid the shader draws is anchored
+     to this, so every dot is a place and the bold dots trace the coasts. */
+  const MAP_COLS = 89, MAP_ROWS = 45;
+  const MAP_MASK = 'AAAADwAAAAAAAAAAHv/4YAHAgAOAAAQJz4AQAQAAADAABgIgIAgAAAwH5gAAc34IOAAMAGwA///GccRgADnX1AAABgBow0DAKhQEAAADAEHAQABqAAAAAB+AEFgAAQyAAAAAEEAHQwABDYAAAAAQEABDAAB5AAAAAAYEAAJgACEGMAAAAgIAAYAAD2TkAAAGAQADAAAcbJoAADwAgAIAAAwF9QAAIiAgAwAAA+ERAAAJYAweAAACCRCAAAJAARAAAAIDeLAAAQAAUEAAAgAKJwADAAAYYAACAAKMQ4YAAA6CAACAAUQSJAAAAeAAAIAAXAYKEAAAGAAAQAAQAwaEAAAE+AAQgAYBAogAAACCAAewAQAAgQAAAEDAAAQBAADMAAAAQCAABAEAACYgAAAgDwABAQAAGUcAAAgAQABAgAADAOAABABAACBAAAAACAABAEAAECAAAAGAAABAIAAQNgAAAygAABAQAAQjAAACCgAACDAAAgmAAAYAgAAIIAABCAAAAgBAAAQQAABIAAAAnCAAAhAAADgAAABxEAABMAAAAAAAAAB4AACgAAAAAAAAAAAAAKAAAAAAAAAABAAAUAAAAAAAAAAAAAAoAAAAAAAAAAAAABgAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
+  /* Cables between the ports, in world cells (cell centres = col+0.5, row+0.5).
+     Endpoints were snapped to the nearest coastline cell, and the bow of each arc
+     was then chosen by searching for a value that keeps the whole route over open
+     water — at this resolution a cable has to round a continent, not cut across
+     it, so every route here was verified to clear every land cell along its path. */
+  const MAP_LINKS = [
+    [22.5, 37.5, 87.5, 36.5,   5.92],   // buenos aires – sydney
+    [20.5, 12.5, 87.5, 36.5,  15.12],   // halifax      – sydney
+    [17.5, 13.5, 46.5, 36.5,   0.00],   // new york     – cape town
+    [22.5, 37.5, 65.5, 22.5,  11.06],   // buenos aires – chennai
+    [18.5, 36.5,  0.5,  9.5,  -4.93],   // valparaiso   – honolulu
+    [14.5, 22.5, 34.5,  6.5,  -0.78],   // panama       – reykjavik
+    [52.5, 27.5, 77.5, 35.5,   1.59],   // mombasa      – perth
+    [84.5, 14.5, 87.5, 29.5,  -0.93],   // tokyo        – auckland
+    [35.5, 21.5, 34.5,  6.5,  -2.74],   // dakar        – reykjavik
+    [14.5, 22.5, 28.5, 27.5,  -3.16],   // panama       – fortaleza
+  ];
+
   const canvas = document.getElementById('bg');
   const gl = canvas.getContext('webgl', { alpha:false, antialias:false, powerPreference:'low-power' })
           || canvas.getContext('experimental-webgl');
@@ -354,71 +381,29 @@ if (!reduced){
     #endif
     uniform vec2 u_res;
     uniform float u_time;    // real seconds — LED blink, decay
-    uniform float u_flow;    // accelerated seconds — packet travel (u_surge speeds this up)
+    uniform float u_flow;    // packet-travel clock; advances slowly under u_surge
     uniform float u_surge;   // 0..1 link saturation
     uniform float u_power;   // 1 = mains on, ~0 = blackout
     uniform float u_glitch;  // 0..1 torn-frame displacement
-    uniform vec3  u_rand;    // per-load scene seed: lattice phase, lane offset, blink rate
+    uniform vec3  u_rand;    // per-load seed: lattice hash offset, blink rate
     uniform vec3  u_gl;      // per-run glitch shape: band height, reshuffle rate, throw
     uniform vec2  u_cell;    // title cell size (uv) and dot radius (device px)
     uniform vec2  u_t_jit;   // title jitter (uv)
     uniform vec3  u_t_pose;  // title opacity, skew slope, red tint
     uniform sampler2D u_tex; // dot-matrix title: one texel per dot
+    uniform vec2  u_mcell;   // world-grid cell size (uv); the lattice is anchored to it
+    uniform float u_dotr;    // dot radius in device px, shared with the title so the
+                             // map dots can never outgrow the logo
+    uniform vec2  u_morig;   // uv of the map's top-left corner (uv.y grows upward)
+    uniform sampler2D u_map; // world mask: r = coastline, a = port (one texel per cell)
+    uniform vec4  u_links[10];   // cable endpoints, in world cells
+    uniform vec4  u_lparam[10];  // per cable: arc height, speed, phase, brightness
 
     float hash11(float n){ return fract(sin(n * 127.1) * 43758.5453123); }
     float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
 
-    // crisp LED dot: ~2px radius core
-    float dotCore(vec2 dpx){ return 1. - smoothstep(.8, 2.0, length(dpx)); }
-
-    // comet packet: tight bright head + short tail, crisp cross-section with slim halo
-    float packetsH(vec2 uv, float pxsz, float t, float spacing, float seed, float dim){
-      float i = floor(uv.y / spacing + .5);
-      float laneY = i * spacing;
-      float h  = hash11(i * 17.31 + seed);
-      float h2 = hash11(i * 31.7  + seed * 1.7);
-      float s = step(.5, h2) * 2. - 1.;
-      float speed = .18 + h * .32;
-      float hx = (fract(t * speed + h) * 2.6 - 1.3) * s;
-      float b = (hx - uv.x) * s;
-      float front = smoothstep(-.006, .008, b);
-      float tail  = exp(-max(b, 0.) * 9.);
-      float head  = exp(-b * b * 12000.);
-      float dyp = abs(uv.y - laneY) / pxsz;
-      float core = 1. - smoothstep(.6, 1.6, dyp);
-      float halo = exp(-dyp * dyp * .25);
-      return (tail * .7 + head * 1.8) * front * (core + halo * .22) * dim * (.6 + h2);
-    }
-    float packetsV(vec2 uv, float pxsz, float t, float spacing, float seed, float dim){
-      float i = floor(uv.x / spacing + .5);
-      float laneX = i * spacing;
-      float h  = hash11(i * 23.7 + seed);
-      float h2 = hash11(i * 41.3 + seed * 2.3);
-      float s = step(.5, h2) * 2. - 1.;
-      float speed = .13 + h * .28;
-      float hy = (fract(t * speed + h) * 2.2 - 1.1) * s;
-      float b = (hy - uv.y) * s;
-      float front = smoothstep(-.006, .008, b);
-      float tail  = exp(-max(b, 0.) * 9.);
-      float head  = exp(-b * b * 12000.);
-      float dxp = abs(uv.x - laneX) / pxsz;
-      float core = 1. - smoothstep(.6, 1.6, dxp);
-      float halo = exp(-dxp * dxp * .25);
-      return (tail * .7 + head * 1.8) * front * (core + halo * .22) * dim * (.6 + h2);
-    }
-    // faint 1px PCB trace along a lane; some lanes are dead
-    float traceH(vec2 uv, float pxsz, float spacing, float seed){
-      float i = floor(uv.y / spacing + .5);
-      float on = step(.35, hash11(i * 7.7 + seed));
-      float dypx = abs(uv.y - i * spacing) / pxsz;
-      return (1. - smoothstep(.5, 1.3, dypx)) * on;
-    }
-    float traceV(vec2 uv, float pxsz, float spacing, float seed){
-      float i = floor(uv.x / spacing + .5);
-      float on = step(.4, hash11(i * 9.1 + seed));
-      float dxpx = abs(uv.x - i * spacing) / pxsz;
-      return (1. - smoothstep(.5, 1.3, dxpx)) * on;
-    }
+    // crisp LED dot with an explicit radius, in device pixels
+    float dotR(float dpx, float rad){ return 1. - smoothstep(rad - .9, rad + .9, dpx); }
 
     void main(){
       vec2 frag = gl_FragCoord.xy;
@@ -430,30 +415,59 @@ if (!reduced){
         float band = floor(frag.y / u_gl.x);
         frag.x += (hash11(band * 3.1 + floor(u_time * u_gl.y) * 7.3) - .5) * u_gl.z * u_glitch;
       }
-      // lanes are shifted as a set so packets and their traces stay aligned
+      // lanes and the lattice are anchored to the world grid, so a cell is a
+      // place on the map rather than a position on the screen
       vec2 uv  = (frag - .5 * u_res) / u_res.y;
-      vec2 luv = uv + vec2(u_rand.y * 3.1, u_rand.y * 1.7);
       float pxsz = 1. / u_res.y;                      // one device pixel in uv units
       // #00e69c → alarm red; fully swapped at peak so the mix never goes olive
       vec3 green = mix(vec3(.0, .902, .612), vec3(1., .16, .09), u_surge);
       vec3 col = mix(vec3(.013, .055, .033), vec3(.055, .016, .013), u_surge);
       float boost = 1. + u_surge * 1.2;
 
-      // LED lattice: crisp dots, a few blink; phase and blink rate differ per load
-      vec2 gp = luv * 34. + u_rand.xx * 17.;
-      vec2 cid = floor(gp);
-      vec2 cpx = (fract(gp) - .5) * (u_res.y / 34.);  // offset from dot center, pixels
-      float blink = step(.95, hash21(cid + floor(u_time * u_rand.z) * 1.7)) * .5;
-      float led = dotCore(cpx) * (.10 + .07 * hash21(cid * 1.7 + u_rand.x) + blink);
-      col += green * led * boost;
+      // cell coordinates: y grows downward, (0,0) is the map's top-left
+      vec2 mg = vec2(uv.x - u_morig.x, u_morig.y - uv.y) / u_mcell.x;
+      vec2 cid = floor(mg);
+      float mapCellPx = u_mcell.x * u_res.y;
+      float distPx = length(fract(mg) - .5) * mapCellPx;
 
-      // PCB traces + packet traffic (flow time accelerates under surge)
-      float tr = traceH(luv, pxsz, .17, 5.) * .030
-               + traceV(luv, pxsz, .26, 13.) * .026;
-      float pk = packetsH(luv, pxsz, u_flow, .17,  3., .60)
-               + packetsH(luv, pxsz, u_flow, .17, 41., .28)
-               + packetsV(luv, pxsz, u_flow, .26, 29., .42);
-      col += green * (tr + pk * boost);
+      // ambient lattice, and land outlines that stay finer than the logo's dots
+      float blink = step(.955, hash21(cid + floor(u_time * u_rand.z) * 1.7)) * .3;
+      float amb = dotR(distPx, u_dotr * .5) * (.035 + .03 * hash21(cid * 1.7 + u_rand.x) + blink);
+
+      // land outlines: a faint tracer on the coast, brighter where a port sits
+      vec4 mp = texture2D(u_map, (cid + .5) / vec2(128., 64.));
+      float inMap = step(-.5, cid.x) * step(cid.x, 88.5) * step(-.5, cid.y) * step(cid.y, 44.5);
+      float coast = dotR(distPx, u_dotr * .78) * inMap;
+      float port  = dotR(distPx, u_dotr * .95) * inMap;
+      float pulse = .8 + .2 * sin(u_time * 1.6 + cid.x * .7 + cid.y * 1.3);
+      col += green * (amb + (coast * mp.r * .34 + port * mp.a * .68 * pulse)) * boost;
+
+      // ---- traffic between regions: fixed cables, one packet each ----
+      float pk = 0.;
+      for (int i = 0; i < 10; i++){
+        vec4 L = u_links[i];
+        vec4 P = u_lparam[i];
+        vec2 a = L.xy, b = L.zw;
+        vec2 ba = b - a;
+        float len = length(ba);
+        vec2 dir = ba / len;
+        vec2 rel = mg - a;
+        float along = dot(rel, dir);
+        if (along > -2. && along < len + 2.){
+          float tn = along / len;
+          // the cable bows outwards, so long-haul routes read as arcs
+          float arcOff = sin(clamp(tn, 0., 1.) * 3.14159265) * P.x;
+          float dcPx = abs(dot(rel, vec2(-dir.y, dir.x)) - arcOff) * mapCellPx;
+          float cable = (1. - smoothstep(.45, 1.5, dcPx)) * .085;
+          float u = fract(u_flow * P.y + P.z);
+          float back = (u - tn) * len;                // >0 once the head has passed
+          float front = smoothstep(-.7, .7, back);    // nothing glows ahead of the head
+          float comet = (exp(-max(back, 0.) * 1.4) * .85 + exp(-back * back * 1.1) * 2.4) * front;
+          float prof = dotR(dcPx, 1.05) + exp(-dcPx * dcPx * .25) * .22;
+          pk += (cable + comet * prof) * P.w;
+        }
+      }
+      col += green * pk * boost;
 
       // ---- dot-matrix title ----
       float cellPx = u_cell.x * u_res.y;
@@ -462,7 +476,7 @@ if (!reduced){
         vec2 lc = (uv - u_t_jit) / u_cell.x;            // title-local, in cell units
         lc.x += lc.y * u_t_pose.y;                      // skew
         vec2 bd = abs(lc) - vec2(53., 5.) * .5;
-        col *= 1. - .42 * tOp * (1. - smoothstep(0., 2.5, max(bd.x, bd.y)));
+        col *= 1. - .38 * tOp * (1. - smoothstep(0., 5., max(bd.x, bd.y)));
 
         vec2 g = lc + vec2(53., 5.) * .5;               // 0..COLS / 0..ROWS
         float gi = floor(g.x), gj = floor(g.y);
@@ -534,10 +548,19 @@ if (!reduced){
   const uTJit  = gl.getUniformLocation(prog, 'u_t_jit');
   const uTPose = gl.getUniformLocation(prog, 'u_t_pose');
   const uTex   = gl.getUniformLocation(prog, 'u_tex');
+  const uMCell = gl.getUniformLocation(prog, 'u_mcell');
+  const uDotR  = gl.getUniformLocation(prog, 'u_dotr');
+  const uMOrig = gl.getUniformLocation(prog, 'u_morig');
+  const uMap   = gl.getUniformLocation(prog, 'u_map');
+  const uLinks = gl.getUniformLocation(prog, 'u_links[0]');
+  const uLParam= gl.getUniformLocation(prog, 'u_lparam[0]');
 
-  const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+
+  /* ---- title texture (unit 0): one texel per title dot ---- */
+  const tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -548,8 +571,55 @@ if (!reduced){
   function markTitleDirty(){ texDirty = true; }
   markTitleDirty();
 
-  // per-load scene seed: lattice phase / lane offset / blink rate
-  gl.uniform3f(uRand, Math.random(), Math.random(), rnd(.45, 1.6));
+  /* ---- world texture (unit 1): coastline mask + port marks ---- */
+  const MAP_TW = 128, MAP_TH = 64;
+  const mapTex = gl.createTexture();
+  const mapData = new Uint8Array(MAP_TW * MAP_TH * 2);   // LUMINANCE_ALPHA pairs
+  {
+    const bin = atob(MAP_MASK);
+    // the texture is 128 wide while the mask rows are 112 bits, so each row is
+    // written at its own stride — packing them end to end would shear the map
+    for (let row = 0; row < MAP_ROWS; row++){
+      for (let col = 0; col < MAP_COLS; col++){
+        const i = row * MAP_COLS + col;
+        if ((bin.charCodeAt(i >> 3) >> (7 - (i & 7))) & 1)
+          mapData[(row * MAP_TW + col) * 2] = 255;
+      }
+    }
+    for (const [ax, ay, bx, by] of MAP_LINKS){
+      for (const [x, y] of [[ax, ay], [bx, by]]){
+        const i = (Math.floor(y) * MAP_TW + Math.floor(x)) * 2 + 1;  // endpoints are cell centres
+        mapData[i] = 255;
+      }
+    }
+  }
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, mapTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE_ALPHA, MAP_TW, MAP_TH, 0,
+                gl.LUMINANCE_ALPHA, gl.UNSIGNED_BYTE, mapData);
+  gl.uniform1i(uMap, 1);
+
+  /* ---- cable geometry: endpoints plus a per-cable arc, speed and phase ---- */
+  const linkData = new Float32Array(MAP_LINKS.length * 4);
+  const paramData = new Float32Array(MAP_LINKS.length * 4);
+  MAP_LINKS.forEach(([ax, ay, bx, by, bow], i) => {
+    linkData.set([ax, ay, bx, by], i * 4);
+    paramData.set([
+      bow,                                            // precomputed water-clearing arc
+      rnd(.15, .3),                                   // packet speed (cycles per second)
+      Math.random(),                                  // phase along the cable
+      rnd(.55, 1),                                    // brightness
+    ], i * 4);
+  });
+  gl.uniform4fv(uLinks, linkData);
+  gl.uniform4fv(uLParam, paramData);
+
+  // per-load seed: lattice hash offset / (unused) / blink rate
+  gl.uniform3f(uRand, Math.random(), 0, rnd(.45, 1.6));
   gl.uniform3f(uGl, 18, 22, 90);                      // overwritten on each glitch
 
   let cellCss = 9, resY = 0;
@@ -560,10 +630,22 @@ if (!reduced){
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.uniform2f(uRes, canvas.width, canvas.height);
     resY = canvas.height;
-    // shrink the grid to fit narrow screens; the block is 53 cols x 5 rows
+
+    // The world grid always fits the viewport, so the map keeps its 112:45
+    // proportions instead of being squashed by the screen's aspect ratio.
+    const scale   = Math.min(innerWidth / MAP_COLS, innerHeight / MAP_ROWS) * .86;
+    const cellPxY = scale * dpr;
+    const cellUv  = cellPxY / resY;
+    const wUv = MAP_COLS * cellUv, hUv = MAP_ROWS * cellUv;
+    gl.uniform2f(uMCell, cellUv, cellUv);
+    gl.uniform2f(uMOrig, -.5 * wUv, .5 * hUv);           // uv.y grows upward
+
+    // title: shrink the 53-col block to fit narrow screens. Its dot radius is
+    // published as u_dotr and reused as the ceiling for every map dot.
     cellCss = clamp(innerWidth * .38 / COLS, 4, 6.5);
-    const cellPx = cellCss * dpr;
-    gl.uniform2f(uCell, cellPx / resY, cellPx * .30);   // cell size (uv), dot radius (device px)
+    const dotPx = cellCss * dpr * .30;
+    gl.uniform1f(uDotR, dotPx);
+    gl.uniform2f(uCell, cellCss * dpr / resY, dotPx);
     return dpr;
   }
   let dpr = 1;
@@ -585,7 +667,7 @@ if (!reduced){
   });
 
   const t0 = performance.now();
-  let flow = 0, last = t0, lastPattern = null;
+  let flow = 0, last = t0;
 
   function frame(now){
     const dt = Math.min((now - last) / 1000, .1);
@@ -639,12 +721,17 @@ if (!reduced){
     }
 
     if (texDirty){
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, TEX_W, TEX_H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE,
                     dotTexture(shownChars));
       texDirty = false;
     }
 
-    flow += dt * (1 + 4 * surge);                     // packets speed up, no phase jump
+    // Links congest under load, so the healthy state runs fast and the red alert
+    // throttles traffic to a crawl. Accumulated separately from u_time so the
+    // packet phase stays continuous — the slowdown is a rate change, not a jump.
+    flow += dt * (1 - .82 * surge);
     gl.uniform1f(uTime,  (now - t0) / 1000);
     gl.uniform1f(uFlow,  flow);
     gl.uniform1f(uSurge, surge);
@@ -656,6 +743,8 @@ if (!reduced){
   }
 
   if (reduced){                                       // one static frame, no effects
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, TEX_W, TEX_H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE,
                   dotTexture([...WORD]));
     gl.uniform1f(uTime, 0);
