@@ -408,8 +408,7 @@ if (!reduced){
     uniform vec3  u_t_pose;  // title opacity, skew slope, red tint
     uniform sampler2D u_tex; // dot-matrix title: one texel per dot
     uniform vec2  u_mcell;   // world-grid cell size (uv); the lattice is anchored to it
-    uniform float u_dotr;    // dot radius in device px, shared with the title so the
-                             // map dots can never outgrow the logo
+    uniform vec4  u_mapdots; // coast radius, port radius, lattice radius, lattice cell (uv)
     uniform vec2  u_morig;   // uv of the map's top-left corner (uv.y grows upward)
     uniform sampler2D u_map; // world mask: r = coastline, a = port (one texel per cell)
     uniform vec4  u_links[23];   // cable legs, in world cells (endpoints may exceed 89)
@@ -473,15 +472,24 @@ if (!reduced){
       float mapCellPx = u_mcell.x * u_res.y;
       float distPx = length(fract(mg) - .5) * mapCellPx;
 
-      // ambient lattice, and land outlines that stay finer than the logo's dots
-      float blink = step(.955, hash21(cid + floor(u_time * u_rand.z) * 1.7)) * .3;
-      float amb = dotR(distPx, u_dotr * .5) * (.035 + .03 * hash21(cid * 1.7 + u_rand.x) + blink);
+      // The background lattice has its own spacing rather than reusing the map grid.
+      // A phone fits the same 89 cells into far fewer pixels, and sharing that grid
+      // would blanket the screen in dots (roughly 3x as many as on a desktop); this
+      // keeps the texture at a steady screen-space density instead.
+      vec2 ag = vec2(uv.x - u_morig.x, u_morig.y - uv.y) / u_mapdots.w;
+      vec2 acid = floor(ag);
+      float ambCellPx = u_mapdots.w * u_res.y;
+      float ambDistPx = length(fract(ag) - .5) * ambCellPx;
+      float blink = step(.955, hash21(acid + floor(u_time * u_rand.z) * 1.7)) * .3;
+      float amb = dotR(ambDistPx, u_mapdots.z) * (.035 + .03 * hash21(acid * 1.7 + u_rand.x) + blink);
 
-      // land outlines: a faint tracer on the coast, brighter where a port sits
+      // land outlines: a faint tracer on the coast, brighter where a port sits.
+      // These radii track the map cell, so a phone shows the same proportion of
+      // dot to gap as a desktop rather than a chunkier grid.
       vec4 mp = texture2D(u_map, (cid + .5) / vec2(128., 64.));
       float inMap = step(-.5, cid.x) * step(cid.x, 88.5) * step(-.5, cid.y) * step(cid.y, 44.5);
-      float coast = dotR(distPx, u_dotr * .78) * inMap;
-      float port  = dotR(distPx, u_dotr * .95) * inMap;
+      float coast = dotR(distPx, u_mapdots.x) * inMap;
+      float port  = dotR(distPx, u_mapdots.y) * inMap;
       float pulse = .8 + .2 * sin(u_time * 1.6 + cid.x * .7 + cid.y * 1.3);
       col += green * (amb + (coast * mp.r * .34 + port * mp.a * .68 * pulse)) * boost;
 
@@ -578,7 +586,7 @@ if (!reduced){
   const uTPose = gl.getUniformLocation(prog, 'u_t_pose');
   const uTex   = gl.getUniformLocation(prog, 'u_tex');
   const uMCell = gl.getUniformLocation(prog, 'u_mcell');
-  const uDotR  = gl.getUniformLocation(prog, 'u_dotr');
+  const uMapDots = gl.getUniformLocation(prog, 'u_mapdots');
   const uMOrig = gl.getUniformLocation(prog, 'u_morig');
   const uMap   = gl.getUniformLocation(prog, 'u_map');
   const uLinks = gl.getUniformLocation(prog, 'u_links[0]');
@@ -651,7 +659,7 @@ if (!reduced){
   gl.uniform3f(uRand, Math.random(), 0, rnd(.45, 1.6));
   gl.uniform3f(uGl, 18, 22, 90);                      // overwritten on each glitch
 
-  let cellCss = 9, resY = 0;
+  let cellCss = 9, resY = 0, titleOffY = 0;
   function metrics(){
     const dpr = Math.min(devicePixelRatio || 1, 2);
     canvas.width  = Math.floor(innerWidth * dpr);
@@ -660,21 +668,49 @@ if (!reduced){
     gl.uniform2f(uRes, canvas.width, canvas.height);
     resY = canvas.height;
 
-    // The world grid always fits the viewport, so the map keeps its 112:45
-    // proportions instead of being squashed by the screen's aspect ratio.
-    const scale   = Math.min(innerWidth / MAP_COLS, innerHeight / MAP_ROWS) * .86;
-    const cellPxY = scale * dpr;
-    const cellUv  = cellPxY / resY;
-    const wUv = MAP_COLS * cellUv, hUv = MAP_ROWS * cellUv;
-    gl.uniform2f(uMCell, cellUv, cellUv);
-    gl.uniform2f(uMOrig, -.5 * wUv, .5 * hUv);           // uv.y grows upward
-
-    // title: shrink the 53-col block to fit narrow screens. Its dot radius is
-    // published as u_dotr and reused as the ceiling for every map dot.
+    // title: shrink the 53-col block to fit narrow screens. Sized before the map
+    // because the portrait layout positions the mark relative to the map, and its
+    // dot radius is the ceiling for every map dot.
     cellCss = clamp(innerWidth * .38 / COLS, 4, 6.5);
     const dotPx = cellCss * dpr * .30;
-    gl.uniform1f(uDotR, dotPx);
     gl.uniform2f(uCell, cellCss * dpr / resY, dotPx);
+
+    /* On a wide screen the map is centred and the wordmark sits over open ocean,
+       which reads well. A portrait phone cannot do that: an 89:45 map only fills a
+       thin band of a tall screen, so the mark would land on top of a small map and
+       the two would muddy each other. Portrait instead scales the map to the full
+       width and treats map + wordmark as one centred group, with the mark tucked
+       under the map — a stacked composition rather than a collision. */
+    const portrait = innerHeight > innerWidth;
+    const scale = portrait
+      ? innerWidth * .98 / MAP_COLS
+      : Math.min(innerWidth / MAP_COLS, innerHeight / MAP_ROWS) * .86;
+    const cellUv  = scale * dpr / resY;
+    const wUv = MAP_COLS * cellUv, hUv = MAP_ROWS * cellUv;
+    gl.uniform2f(uMCell, cellUv, cellUv);
+
+    if (portrait){
+      const titleH  = ROWS * cellCss * dpr / resY;      // wordmark height in uv
+      const gapUv   = .055;                             // space between map and mark
+      const mapTop  = (hUv + gapUv + titleH) * .5;      // centre the whole group
+      gl.uniform2f(uMOrig, -.5 * wUv, mapTop);
+      titleOffY = mapTop - hUv - gapUv - titleH * .5;   // mark centre, just below
+    } else {
+      gl.uniform2f(uMOrig, -.5 * wUv, .5 * hUv);         // uv.y grows upward
+      titleOffY = 0;
+    }
+
+    // Map and lattice dot sizes. Radii are fractions of their own cell so the
+    // texture looks the same on any screen, but they never exceed the wordmark's
+    // dot radius — the mark stays the boldest thing on the page. The lattice keeps
+    // a minimum spacing so a fine portrait map grid does not turn the background
+    // into a dense field of dots.
+    const mapCellPx = scale * dpr;
+    const coastR = Math.min(mapCellPx * .123, dotPx * .78);
+    const portR  = Math.min(mapCellPx * .160, dotPx * .95);
+    const ambCellPx = Math.max(mapCellPx, 11 * dpr);
+    const ambR   = Math.min(ambCellPx * .078, dotPx * .50);
+    gl.uniform4f(uMapDots, coastR, portR, ambR, ambCellPx / resY);
     return dpr;
   }
   let dpr = 1;
@@ -685,7 +721,11 @@ if (!reduced){
   /* The canvas is behind the page, so the title needs its own pointer handling. */
   function titleHit(x, y){
     const w = COLS * cellCss, h = ROWS * cellCss;
-    const x0 = (innerWidth - w) / 2, y0 = (innerHeight - h) / 2;
+    const x0 = (innerWidth - w) / 2;
+    // titleOffY is in uv units (one unit = the full viewport height, measured from
+    // the centre, positive upward), so converting to CSS pixels from the top means
+    // subtracting the whole offset, not half of it.
+    const y0 = (innerHeight - h) / 2 - titleOffY * innerHeight;
     return x >= x0 - 8 && x <= x0 + w + 8 && y >= y0 - 8 && y <= y0 + h + 8;
   }
   addEventListener('pointermove', (e) => {
@@ -766,7 +806,7 @@ if (!reduced){
     gl.uniform1f(uSurge, surge);
     gl.uniform1f(uPower, power);
     gl.uniform1f(uGlitch, glitch);
-    gl.uniform2f(uTJit, T.jx * dpr / resY, T.jy * dpr / resY);
+    gl.uniform2f(uTJit, T.jx * dpr / resY, (T.jy * dpr / resY) + titleOffY);
     gl.uniform3f(uTPose, T.op, T.skew, T.red);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
