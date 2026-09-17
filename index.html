@@ -40,6 +40,14 @@
   #title.fallback span{ text-shadow:inherit; }
   #title.fallback span:last-child{ color:#00e69c; }
 
+  /* no double-tap-zoom delay, so the title reads a double-tap promptly */
+  html{ touch-action:manipulation; }
+  /* Breakout extra: the whole viewport becomes the field, so while a round is on
+     there is nothing to scroll, nothing to pinch, and no cursor to show. */
+  html.playing, html.playing body{
+    touch-action:none; overscroll-behavior:none; cursor:none; user-select:none;
+  }
+
 </style>
 </head>
 <body>
@@ -64,6 +72,100 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const FX = { surge: null, blackout: null, glitch: null };
 const T  = { op: 1, jx: 0, jy: 0, skew: 0, red: 0 };
 
+/* ============ 8-bit sound ============ */
+/* Square-wave blips, synthesised on the spot: the page ships no audio files, and a
+   square wave is the entire palette an 8-bit machine had to work with anyway. The
+   context may only start from a user gesture, and every way into the extra is one —
+   a double-tap on the title. Started from the console there is no gesture, so the
+   context stays suspended until the next click; see the resume listener below. */
+const SFX = { on: true, ctx: null, gain: null, lastHit: 0 };
+
+function sfxInit(){
+  if (!SFX.on) return null;
+  if (!SFX.ctx){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC){ SFX.on = false; return null; }
+    SFX.ctx = new AC();
+    SFX.gain = SFX.ctx.createGain();
+    SFX.gain.gain.value = .07;
+    SFX.gain.connect(SFX.ctx.destination);
+  }
+  if (SFX.ctx.state === 'suspended') SFX.ctx.resume().catch(() => {});
+  return SFX.ctx;
+}
+
+/* One square note. Bending the pitch across the note is where most of the
+   character comes from — a falling pitch reads as failure, a rising one as reward. */
+function sfxNote(at, freq, dur, vol, to){
+  const ctx = SFX.ctx;
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = 'square';
+  o.frequency.setValueAtTime(freq, at);
+  if (to) o.frequency.linearRampToValueAtTime(to, at + dur);
+  g.gain.setValueAtTime(.0001, at);
+  g.gain.linearRampToValueAtTime(vol, at + .005);
+  g.gain.setValueAtTime(vol, at + dur * .7);
+  g.gain.exponentialRampToValueAtTime(.0001, at + dur);
+  o.connect(g); g.connect(SFX.gain);
+  o.start(at); o.stop(at + dur + .02);
+}
+
+/* notes are [offset, frequency, duration, volume, bend-to] */
+function sfx(notes){
+  if (!SFX.on || !sfxInit()) return;
+  const t = SFX.ctx.currentTime;
+  for (const n of notes) sfxNote(t + n[0], n[1], n[2], n[3], n[4]);
+}
+
+/* a rising three-note "ready" */
+const sfxStart = () => sfx([[0, 392, .085, .85], [.075, 523, .085, .85], [.15, 784, .22, .9]]);
+/* a short blip that climbs as the wall wears down; throttled so a burst of bricks
+   reads as a run of hits rather than one buzz */
+function sfxHit(row){
+  const now = performance.now();
+  if (now - SFX.lastHit < 28) return;
+  SFX.lastHit = now;
+  const f = [880, 760, 640, 540, 452][clamp(row, 0, ROWS - 1)] * rnd(.98, 1.02);
+  sfx([[0, f, .05, .5, f * .82]]);
+}
+/* a descending slide, the classic Game Over fall */
+const sfxLose = () => sfx([[0, 440, .1, .8], [.1, 349, .1, .8], [.2, 262, .12, .8], [.33, 196, .34, .85, 110]]);
+/* an ascending fanfare, held on the top note */
+const sfxWin = () => sfx([[0, 523, .1, .85], [.09, 659, .1, .85], [.18, 784, .1, .85],
+                          [.27, 1047, .13, .9], [.41, 1319, .32, .9], [.76, 1568, .26, .7]]);
+['pointerdown', 'keydown'].forEach(ev => addEventListener(ev, () => {
+  if (SFX.on && SFX.ctx && SFX.ctx.state === 'suspended') SFX.ctx.resume().catch(() => {});
+}, { passive: true }));
+
+/* ============ hidden extra: breakout ============ */
+/* Double-tapping the wordmark turns its own dots into a brick wall and drops a
+   paddle at the bottom of the screen. The state lives out here because the idle
+   rotation, the konami trigger and the title's decrypt all have to stand down
+   while a round is on; the renderer owns the physics and the drawing. Geometry is
+   held in arena-local CSS pixels — the origin is the arena's top-left corner, not
+   the viewport's — so the physics never has to know where the cabinet sits. */
+const BRK = {
+  on: false,
+  dots: null,          // COLS*ROWS: 1 = that dot is still standing
+  bricks: [],          // runs of lit dots, each with a live flag and a rectangle
+  alive: 0,            // bricks still standing
+  run: null,           // installed by the renderer; see netns.breakout()
+  W: 0, H: 0,          // arena size (the playfield, not the viewport)
+  ax: 0, ay: 0,        // arena's top-left corner in screen CSS px
+  cell: 0,             // wall cell size — the wordmark's own cell, unmagnified
+  wallT: 0, wallL: 0,  // wall's top-left corner in arena-local px
+  jy: 0,               // wordmark centre in uv, so it sits on the arena's top edge
+  pad: { x: 0, y: 0, hw: 0, hh: 0, target: 0 },
+  ball: { x: 0, y: 0, vx: 0, vy: 0, r: 0 },
+  ballR: 0,            // radius at the current field size
+  keys: { l: false, r: false },
+  base: 0, speed: 0,   // ball speed now, and at the start of a life
+  hold: 0,             // seconds left before the ball is served
+  acc: 0,
+  win: false, winT: 0, revealed: 0,   // cleared: the wordmark writes itself back on
+  lose: false, loseT: 0,              // ball lost: the field goes red, then it returns
+};
+
 /* ============ dot-matrix title ============ */
 /* 5x5 glyph bitmaps, one bit per column (MSB = leftmost), same grid as favicon.svg */
 const FONT = {
@@ -74,6 +176,10 @@ const FONT = {
   'D': [0b11110, 0b10001, 0b10001, 0b10001, 0b11110],
   'V': [0b10001, 0b10001, 0b10101, 0b01010, 0b00100],
   '.': [0b00000, 0b00000, 0b00000, 0b00110, 0b00110],
+  /* Only used by the breakout extra's error screen — the wordmark itself never
+     needs them, and dotTexture() only ever walks the first WORD.length chars. */
+  'O': [0b01110, 0b10001, 0b10001, 0b10001, 0b01110],
+  'R': [0b11110, 0b10001, 0b11110, 0b10100, 0b10010],
 };
 const WORD  = 'NETNS.DEV';
 const NCHAR = WORD.length;                             // 9
@@ -242,6 +348,9 @@ function fxDecrypt(){
 
   const t0 = performance.now();
   (function frame(){
+    // a round can start mid-decrypt; drop the scrambling and let the real word
+    // come back rather than keep fighting the wall for the same texture
+    if (BRK.on){ shownChars = [...WORD]; texDirty = true; decoding = false; return; }
     const e = performance.now() - t0;
     shownChars = [...WORD].map((ch, i) => e >= lockAt[i] ? ch : null);
     texDirty = true;                                  // garbage segments still unresolved
@@ -278,6 +387,7 @@ const BINS = {
 const SEQUENCE = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
 let seqIdx = 0;
 addEventListener('keydown', (e) => {
+  if (BRK.on) return;                                 // arrows drive the paddle
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (k === SEQUENCE[seqIdx]){
     if (++seqIdx === SEQUENCE.length){ seqIdx = 0; fxOverload(); }
@@ -294,7 +404,7 @@ const ROTATION = ['decrypt', 'decrypt', 'overload', 'glitch', 'glitch', 'blackou
 function scheduleRotation(){
   clearTimeout(rotTimer);
   rotTimer = setTimeout(() => {
-    if (!document.hidden) BINS[ROTATION[(Math.random() * ROTATION.length) | 0]].run();
+    if (!document.hidden && !BRK.on) BINS[ROTATION[(Math.random() * ROTATION.length) | 0]].run();
     scheduleRotation();
   }, 1500 + Math.random() * 3000);                    // 1.5–4.5s, stays under 5s after timer drift
 }
@@ -303,7 +413,35 @@ if (!reduced){
   scheduleRotation();
   // any real interaction pushes the next effect out, so it never interrupts
   ['pointerdown', 'keydown'].forEach(ev =>
-    addEventListener(ev, () => scheduleRotation(), { passive: true }));
+    addEventListener(ev, () => { if (!BRK.on) scheduleRotation(); }, { passive: true }));
+}
+
+/* --- handing the screen to the breakout extra, and taking it back -------------
+   Standing down is more than clearing one value: the rotation has to stop
+   rescheduling, the idle loop has to be retired, and pulseTimer has to be cleared
+   explicitly because its callback is unconditional — left alone it would restart
+   the idle loop in the middle of a round and fight the game for the title pose.
+   A decrypt already in flight notices BRK.on on its own. */
+function fxSuspend(){
+  ++animToken;
+  clearTimeout(idleTimer);  idleTimer = null;
+  clearTimeout(rotTimer);   rotTimer = null;
+  clearTimeout(pulseTimer); pulseTimer = null;
+  pulse = null;
+  decoding = false;
+  shownChars = [...WORD];
+  texDirty = true;
+  FX.surge = FX.blackout = FX.glitch = null;
+  idlePose(1, 0, 0, 0);
+  T.red = 0;
+}
+function fxResume(){
+  if (reduced) return;
+  // Losing ends on the red overload, and a running pulse hands the tube back to the
+  // idle loop itself when its own timer expires. Starting one here as well would
+  // leave the idle stutter and the alert fighting over the same pose.
+  if (!pulse) idleStart(false);
+  scheduleRotation();
 }
 
 /* ============ the controls: the browser console ============ */
@@ -319,14 +457,28 @@ if (!reduced){
   Object.entries(BINS).forEach(([n, b]) => {
     api[n] = () => { b.run(); return n + ': ' + b.desc; };
   });
+  api.breakout = () => {
+    if (!BRK.run) return 'breakout: unavailable without WebGL or with reduced motion';
+    if (BRK.on){ BRK.run.end(); return 'breakout: quit'; }
+    BRK.run.start();
+    return 'breakout: arrows or A/D, or drag — Esc to quit';
+  };
+  api.sound = (on) => {
+    SFX.on = on === undefined ? !SFX.on : !!on;
+    if (!SFX.on && SFX.ctx) SFX.ctx.suspend().catch(() => {});
+    if (SFX.on) sfxInit();
+    return 'sound: ' + (SFX.on ? 'on' : 'off');
+  };
   api.help = () => {
     line('bins', dim);
     Object.entries(BINS).forEach(([n, b]) => console.log('%c  netns.' + n + '()  %c' + b.desc, name, dim));
     line('triggers', dim);
     console.log('%c  click the title  %cdecrypt', name, dim);
     console.log('%c  \u2191\u2191\u2193\u2193\u2190\u2192\u2190\u2192BA  %coverload', name, dim);
+    console.log('%c  double-click the title  %cbreakout   (netns.breakout() toggles it)', name, dim);
+    console.log('%c  netns.sound()  %cmute or unmute the breakout blips', name, dim);
     line('a random bin also runs on its own every 1.5-4.5s', dim);
-    return Object.keys(BINS);
+    return Object.keys(BINS).concat('breakout', 'sound');
   };
   window.netns = api;
 
@@ -413,6 +565,13 @@ if (!reduced){
     uniform sampler2D u_map; // world mask: r = coastline, a = port (one texel per cell)
     uniform vec4  u_links[23];   // cable legs, in world cells (endpoints may exceed 89)
     uniform vec4  u_lparam[23];  // per leg: arc height, speed, phase, brightness
+    uniform vec4  u_pad;     // breakout: paddle centre (uv), half width and half height (uv)
+    uniform vec3  u_ball;    // breakout: ball centre (uv) and radius (uv)
+    uniform vec4  u_arena;   // breakout: cabinet centre (uv), half width and half height (uv)
+    uniform float u_play;    // 1 while the breakout extra owns the cabinet
+    uniform float u_actors;  // 1 while the paddle and ball should be on screen
+    uniform float u_flash;   // victory bloom over the whole frame
+    uniform float u_reveal;  // victory write-head position, in dot columns (-1 when idle)
 
     float hash11(float n){ return fract(sin(n * 127.1) * 43758.5453123); }
     float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
@@ -513,7 +672,8 @@ if (!reduced){
         vec2 lc = (uv - u_t_jit) / u_cell.x;            // title-local, in cell units
         lc.x += lc.y * u_t_pose.y;                      // skew
         vec2 bd = abs(lc) - vec2(53., 5.) * .5;
-        col *= 1. - .38 * tOp * (1. - smoothstep(0., 5., max(bd.x, bd.y)));
+        float plate = 1. - smoothstep(0., 5., max(bd.x, bd.y));
+        col *= 1. - .38 * tOp * plate;
 
         vec2 g = lc + vec2(53., 5.) * .5;               // 0..COLS / 0..ROWS
         float gi = floor(g.x), gj = floor(g.y);
@@ -533,7 +693,60 @@ if (!reduced){
         vec3 tcol = mix(vec3(.918, 1., .961), vec3(0., .902, .612), step(4.5, ch));
         tcol = mix(tcol, vec3(1., .16, .09), u_t_pose.z);
         col += tcol * (core + glow * .5) * on * tOp;
+
+        // Victory: a bar of light travelling across the wall as the wordmark is
+        // written back on. It is drawn over the plate rather than over the dots, so
+        // it leads the letters in rather than lighting up what is already there. Its
+        // band is tighter than the plate's — the plate fades out over five cells,
+        // which is right for the backing but far too tall for a scanning bar.
+        if (u_reveal >= 0.){
+          float band = (1. - smoothstep(0., .9, abs(lc.y) - 2.5))
+                     * (1. - smoothstep(0., .9, abs(lc.x) - 26.5));
+          float hx = gi + .5 - u_reveal;
+          col += vec3(.918, 1., .961) * exp(-hx * hx * .5) * band * .75;
+        }
       }
+
+      // ---- breakout extra: the cabinet, the paddle and the ball ----------------
+      // Drawn with the same idiom as every other mark on the page — a hard core
+      // plus a soft halo, and a single crisp rule for the frame — so the extra
+      // reads as part of the sign rather than something pasted over it. The wall
+      // needs no code here: it is the wordmark's own dots, left at their own size,
+      // and "destroyed" just means those texels are uploaded dark.
+      if (u_play > .5){
+        vec2 fp = frag - .5 * u_res;                    // centred device pixels
+        vec3 ink  = vec3(.918, 1., .961);
+        vec3 tint = mix(green, ink, .55);
+
+        // the cabinet: distance to the arena's outline, so the rule stays two
+        // device pixels wide on any display
+        vec2 ap = fp - vec2(u_arena.x, u_arena.y) * u_res.y;
+        vec2 ah = vec2(u_arena.z, u_arena.w) * u_res.y;
+        vec2 ae = abs(ap) - ah;
+        float ad = length(max(ae, 0.)) + min(max(ae.x, ae.y), 0.);
+        col += mix(green, ink, .30) * (1. - smoothstep(1., 2.4, abs(ad))) * .85;
+
+        if (u_actors > .5){
+          vec2 pc = vec2(u_pad.x, u_pad.y) * u_res.y;
+          float hw = u_pad.z * u_res.y, hh = u_pad.w * u_res.y;
+          vec2 pr = fp - pc;
+          // distance to the bar's horizontal axis, minus its radius: a capsule
+          float pd = length(vec2(pr.x - clamp(pr.x, -hw, hw), pr.y)) - hh;
+          float pcore = 1. - smoothstep(-.8, .8, pd);
+          float pgap = max(pd, 0.), psig = hh * 2.6;
+          col += tint * (pcore + exp(-pgap * pgap / (2. * psig * psig)) * .55) * 1.05;
+
+          float brad = u_ball.z * u_res.y;
+          float bdist = length(fp - vec2(u_ball.x, u_ball.y) * u_res.y) - brad;
+          float bcore = 1. - smoothstep(-.7, .7, bdist);
+          float bgap = max(bdist, 0.), bsig = brad * 3.2;
+          col += mix(tint, ink, .5) * (bcore * 1.15 + exp(-bgap * bgap / (2. * bsig * bsig)) * .5);
+        }
+      }
+
+      // Victory bloom. Green and white, deliberately not the red the error uses —
+      // the two endings have to be tellable apart at a glance.
+      col += mix(vec3(.0, .902, .612), vec3(.918, 1., .961), .45) * u_flash * .4;
 
       // vignette + fine grain
       float r = length(uv);
@@ -591,6 +804,13 @@ if (!reduced){
   const uMap   = gl.getUniformLocation(prog, 'u_map');
   const uLinks = gl.getUniformLocation(prog, 'u_links[0]');
   const uLParam= gl.getUniformLocation(prog, 'u_lparam[0]');
+  const uPad   = gl.getUniformLocation(prog, 'u_pad');
+  const uBall  = gl.getUniformLocation(prog, 'u_ball');
+  const uPlay  = gl.getUniformLocation(prog, 'u_play');
+  const uActors= gl.getUniformLocation(prog, 'u_actors');
+  const uArena = gl.getUniformLocation(prog, 'u_arena');
+  const uFlash = gl.getUniformLocation(prog, 'u_flash');
+  const uReveal= gl.getUniformLocation(prog, 'u_reveal');
 
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
 
@@ -711,6 +931,14 @@ if (!reduced){
     const ambCellPx = Math.max(mapCellPx, 11 * dpr);
     const ambR   = Math.min(ambCellPx * .078, dotPx * .50);
     gl.uniform4f(uMapDots, coastR, portR, ambR, ambCellPx / resY);
+
+    /* While the extra is running the wordmark keeps this exact size and dot radius
+       and only moves, riding the top edge of the cabinet. The map and lattice are
+       left alone, and nothing here writes a value that varies between frames, so
+       leaving a round takes another metrics() call and nothing else. titleOffY is
+       the mark's centre in uv (positive upward, from the frame centre), so it
+       converts straight to the screen y the cabinet needs. */
+    if (BRK.on) brkLayout(cellCss, innerHeight / 2 - titleOffY * innerHeight);
     return dpr;
   }
   let dpr = 1;
@@ -729,11 +957,371 @@ if (!reduced){
     return x >= x0 - 8 && x <= x0 + w + 8 && y >= y0 - 8 && y <= y0 + h + 8;
   }
   addEventListener('pointermove', (e) => {
+    if (BRK.on) return;                                 // the field owns the pointer
     document.body.style.cursor = titleHit(e.clientX, e.clientY) ? 'pointer' : '';
   }, { passive: true });
   addEventListener('click', (e) => {
+    if (BRK.on) return;
     if (titleHit(e.clientX, e.clientY)) fxDecrypt();
   });
+
+  /* ============ the hidden extra, in full ============
+     Double-tap the wordmark and its own dots become a brick wall: the title is
+     magnified and parked at the top, a paddle appears at the bottom, and the whole
+     viewport becomes the field. Geometry lives in CSS pixels with the origin at the
+     top-left, and is converted to the uniforms' uv only when it is written, so the
+     collision code and the shader cannot disagree about where anything is. The ball
+     is advanced at a fixed tick and its speed is a number rather than a vector
+     length, so a fast ball cannot step straight through a brick on a slow frame. */
+  const BRK_STEP = 1 / 240;                             // fixed physics tick, in seconds
+  const BRK_WIN_DUR = 1;                                // how long the wall takes to redraw
+  const BRK_LOSE_DUR = .85;                             // how long the error wash holds
+
+  function brkBuildBricks(){
+    // a brick is a run of lit dots in one row — which is why a letter breaks apart
+    // stroke by stroke rather than vanishing whole
+    BRK.bricks = [];
+    BRK.alive = 0;
+    for (let row = 0; row < ROWS; row++){
+      for (let col = 0; col < COLS; col++){
+        if (!BRK.dots[row * COLS + col]) continue;
+        let end = col;
+        while (end + 1 < COLS && BRK.dots[row * COLS + end + 1]) end++;
+        BRK.bricks.push({
+          row, c0: col, c1: end, alive: true,
+          x0: BRK.wallL + col * BRK.cell, x1: BRK.wallL + (end + 1) * BRK.cell,
+          y0: BRK.wallT + row * BRK.cell, y1: BRK.wallT + (row + 1) * BRK.cell,
+        });
+        BRK.alive++;
+        col = end;
+      }
+    }
+  }
+
+  /* The wall's texture. Same layout as dotTexture(), except a dot that has been
+     knocked out is uploaded dark — so "the brick is gone" needs no code in the
+     shader at all. */
+  function brkTexture(){
+    const buf = new Uint8Array(TEX_W * TEX_H);
+    for (let c = 0; c < NCHAR; c++){
+      const rows = FONT[WORD[c]];
+      for (let r = 0; r < ROWS; r++){
+        for (let k = 0; k < GLYPH_W; k++){
+          if (!(rows[r] >> (GLYPH_W - 1 - k) & 1)) continue;
+          if (!BRK.dots[r * COLS + c * (GLYPH_W + GLYPH_GAP) + k]) continue;
+          buf[r * TEX_W + c * GLYPH_W + k] = 255;
+        }
+      }
+    }
+    return buf;
+  }
+
+  /* The error screen: ERROR, spelled in the same dot matrix, centred in the same
+     nine character cells the wordmark occupies. It paints whole lit dots rather
+     than the wall's remaining ones, because by the time it shows, the wall is
+     irrelevant. */
+  function brkErrorTexture(){
+    const buf = new Uint8Array(TEX_W * TEX_H);
+    const word = 'ERROR', off = ((NCHAR - word.length) / 2) | 0;   // 2 cells in from each end
+    for (let i = 0; i < word.length; i++){
+      const rows = FONT[word[i]], c = off + i;
+      for (let r = 0; r < ROWS; r++)
+        for (let k = 0; k < GLYPH_W; k++)
+          if (rows[r] >> (GLYPH_W - 1 - k) & 1) buf[r * TEX_W + c * GLYPH_W + k] = 255;
+    }
+    return buf;
+  }
+
+  /* The cabinet. The wordmark keeps the size the page already gave it — blowing it
+     up made the letters coarse — and instead gets a bordered arena around it, with
+     the mark sitting on the arena's top edge as the brick wall. Everything below
+     that edge is playfield. */
+  function brkLayout(cellPx, logoCy){
+    const cell = BRK.cell = cellPx;
+    const logoW = COLS * cell, logoH = ROWS * cell;
+    const pad = Math.max(7, cell * 1.5);
+
+    BRK.W = logoW + pad * 2;
+    // roughly square, and never more than about half the screen, so the cabinet
+    // always fits whichever axis is the tight one
+    BRK.H = Math.max(logoH + pad * 5, Math.min(BRK.W * .92, innerHeight * .58));
+    BRK.ax = (innerWidth - BRK.W) / 2;
+    // The mark keeps the exact position the layout gave it and the cabinet is built
+    // around it, so entering a round does not make the logo jump. Portrait puts the
+    // mark under the map rather than at the centre, which is why its real centre is
+    // passed in. Only when the cabinet would not fit at that spot does it slide, and
+    // the mark rides along with it.
+    const wantAy = logoCy - pad - logoH / 2;
+    BRK.ay = clamp(wantAy, 12, Math.max(12, innerHeight - 12 - BRK.H));
+
+    BRK.wallT = pad;                                    // the wall hugs the cabinet's top edge
+    BRK.wallL = pad;
+    BRK.jy = (innerHeight / 2 - (BRK.ay + pad + logoH / 2)) / innerHeight;
+    brkBuildBricks();
+
+    const p = BRK.pad;
+    p.hw = clamp(BRK.W * .10, 16, 60);
+    p.hh = clamp(p.hw * .16, 2.5, 5.5);
+    p.y  = BRK.H - Math.max(15, BRK.H * .10);
+    if (!p.x) p.x = BRK.W / 2;
+    p.x = p.target = clamp(p.x, p.hw, BRK.W - p.hw);
+
+    // everything scales off the cabinet, so the game plays the same on a phone as
+    // on a wide monitor instead of getting frantic in a small box
+    BRK.ballR = clamp(cell * .45, 3, 7);
+    BRK.base  = clamp(BRK.W * .72, 160, 430);
+    BRK.speed = BRK.speed ? clamp(BRK.speed, BRK.base, BRK.base * 1.5) : BRK.base;
+    const B = BRK.ball;
+    B.r = BRK.ballR;
+    // a resize mid-round can leave the ball outside the new cabinet
+    B.x = clamp(B.x, B.r, BRK.W - B.r);
+    if (B.y - B.r > BRK.H - 12){ B.x = p.x; B.y = p.y - p.hh - B.r - 1; }
+  }
+
+  function brkServe(delay){
+    const p = BRK.pad, B = BRK.ball;
+    BRK.speed = BRK.base;
+    B.r = BRK.ballR;
+    B.x = p.x;
+    B.y = p.y - p.hh - B.r - 1;
+    // up and off to one side, but never so flat that the ball just runs the width
+    const ang = between(-1, 1) * rnd(.18, .45) + rnd(-.2, .2);
+    B.vx = Math.sin(ang) * BRK.speed;
+    B.vy = -Math.cos(ang) * BRK.speed;
+    BRK.hold = delay;
+  }
+
+  function brkAim(cssX){
+    const p = BRK.pad;
+    p.target = clamp(cssX - BRK.ax, p.hw, BRK.W - p.hw);   // screen x → arena-local x
+    p.x = p.target;                                     // a dragged paddle should not lag
+  }
+
+  // Ball against a brick, treating the ball as a point against the brick swollen by
+  // its radius, then pushed out along whichever axis it was least far inside.
+  function brkResolve(br){
+    const B = BRK.ball, r = B.r;
+    const ex0 = br.x0 - r, ex1 = br.x1 + r, ey0 = br.y0 - r, ey1 = br.y1 + r;
+    if (B.x < ex0 || B.x > ex1 || B.y < ey0 || B.y > ey1) return false;
+    const ovx = Math.min(B.x - ex0, ex1 - B.x);
+    const ovy = Math.min(B.y - ey0, ey1 - B.y);
+    if (ovx < ovy){
+      if (B.x < (br.x0 + br.x1) / 2){ B.x = ex0; B.vx = -Math.abs(B.vx); }
+      else                          { B.x = ex1; B.vx =  Math.abs(B.vx); }
+    } else {
+      if (B.y < (br.y0 + br.y1) / 2){ B.y = ey0; B.vy = -Math.abs(B.vy); }
+      else                          { B.y = ey1; B.vy =  Math.abs(B.vy); }
+    }
+    return true;
+  }
+
+  function brkBreak(br){
+    br.alive = false;
+    BRK.alive--;
+    for (let c = br.c0; c <= br.c1; c++) BRK.dots[br.row * COLS + c] = 0;
+    BRK.speed = Math.min(BRK.speed * 1.02, BRK.base * 1.5);
+    texDirty = true;
+    if (!BRK.alive){
+      // Wall down: the dots are all gone, so the victory sweep is what puts the
+      // wordmark back rather than a separate effect laid over a blank wall.
+      BRK.win = true; BRK.winT = 0; BRK.revealed = 0;
+      BRK.dots.fill(0);
+      sfxWin();
+    } else sfxHit(br.row);
+  }
+
+  /* The wordmark writes itself back on, one dot column at a time, with a bar of
+     light at the leading edge — the same letterforms eroding, in reverse. */
+  function brkRevealCol(c){
+    const ch = (c / (GLYPH_W + GLYPH_GAP)) | 0, k = c - ch * (GLYPH_W + GLYPH_GAP);
+    if (ch >= NCHAR || k >= GLYPH_W) return;            // a gap column holds no dots
+    const rows = FONT[WORD[ch]];
+    for (let r = 0; r < ROWS; r++)
+      if (rows[r] >> (GLYPH_W - 1 - k) & 1) BRK.dots[r * COLS + c] = 1;
+  }
+
+  function brkWinStep(dt){
+    BRK.winT += dt;
+    const p = Math.min(1, BRK.winT / BRK_WIN_DUR);
+    const upto = Math.min(COLS, Math.ceil(p * COLS));
+    while (BRK.revealed < upto){
+      brkRevealCol(BRK.revealed++);
+      texDirty = true;
+    }
+    if (p >= 1) brkEnd();
+  }
+
+  /* Losing the ball ends the round: the field washes red where it stands, and the
+     red overload carries it back to the plain wordmark. */
+  function brkLose(){
+    if (BRK.lose) return;
+    BRK.lose = true; BRK.loseT = 0;
+    texDirty = true;
+    sfxLose();
+    fxOverload();                                       // the red alert is the wash
+  }
+
+  // Re-assert the ball's speed, and refuse to let it settle into a horizontal rattle.
+  function brkRenorm(){
+    const B = BRK.ball;
+    const s = Math.hypot(B.vx, B.vy) || 1;
+    B.vx = B.vx / s * BRK.speed;
+    B.vy = B.vy / s * BRK.speed;
+    const minVy = BRK.speed * .28;
+    if (Math.abs(B.vy) < minVy) B.vy = B.vy < 0 ? -minVy : minVy;
+  }
+
+  function brkTick(h){
+    const p = BRK.pad, B = BRK.ball;
+
+    const ks = (BRK.keys.r ? 1 : 0) - (BRK.keys.l ? 1 : 0);
+    if (ks) p.target = clamp(p.target + ks * BRK.W * .95 * h, p.hw, BRK.W - p.hw);
+    p.x += (p.target - p.x) * Math.min(1, h * 26);
+
+    if (BRK.hold > 0){                                  // ball sits on the bar
+      BRK.hold -= h;
+      B.x = p.x;
+      B.y = p.y - p.hh - B.r - 1;
+      return;
+    }
+
+    B.x += B.vx * h;
+    B.y += B.vy * h;
+    const r = B.r;
+
+    if (B.x - r < 0){ B.x = r; B.vx = Math.abs(B.vx); }
+    else if (B.x + r > BRK.W){ B.x = BRK.W - r; B.vx = -Math.abs(B.vx); }
+    if (B.y - r < 0){ B.y = r; B.vy = Math.abs(B.vy); }
+
+    if (B.y - r < BRK.wallT + ROWS * BRK.cell){
+      for (const br of BRK.bricks){
+        if (!br.alive) continue;
+        if (B.x + r < br.x0 || B.x - r > br.x1 || B.y + r < br.y0 || B.y - r > br.y1) continue;
+        if (brkResolve(br)){ brkBreak(br); break; }
+      }
+    }
+
+    if (B.vy > 0 && B.y + r >= p.y - p.hh && B.y - r <= p.y + p.hh
+        && B.x + r >= p.x - p.hw && B.x - r <= p.x + p.hw){
+      B.y = p.y - p.hh - r;
+      const ang = clamp((B.x - p.x) / p.hw, -1, 1) * 1.05;   // ≤ ~60° off vertical
+      B.vx = Math.sin(ang) * BRK.speed;
+      B.vy = -Math.cos(ang) * BRK.speed;
+    }
+
+    brkRenorm();
+    if (B.y - r > BRK.H) brkLose();
+  }
+
+  function brkStep(dt){
+    if (!BRK.on) return;
+    if (BRK.win){ brkWinStep(dt); return; }
+    if (BRK.lose){
+      BRK.loseT += dt;
+      if (BRK.loseT >= BRK_LOSE_DUR) brkEnd();          // fxOverload is already running
+      return;
+    }
+    BRK.acc = Math.min(BRK.acc + dt, .25);
+    while (BRK.acc >= BRK_STEP){ brkTick(BRK_STEP); BRK.acc -= BRK_STEP; }
+  }
+
+  function brkStart(){
+    if (reduced || BRK.on) return false;
+    BRK.dots = new Uint8Array(COLS * ROWS);
+    for (let c = 0; c < NCHAR; c++){
+      const rows = FONT[WORD[c]];
+      for (let r = 0; r < ROWS; r++)
+        for (let k = 0; k < GLYPH_W; k++)
+          if (rows[r] >> (GLYPH_W - 1 - k) & 1)
+            BRK.dots[r * COLS + c * (GLYPH_W + GLYPH_GAP) + k] = 1;
+    }
+    BRK.speed = 0;
+    BRK.pad.x = 0;
+    BRK.keys.l = BRK.keys.r = false;
+    BRK.win = false; BRK.lose = false; BRK.revealed = 0;
+    BRK.acc = 0;
+    BRK.on = true;
+    document.documentElement.classList.add('playing');
+    fxSuspend();                                        // the sign stands down
+    metrics();                                          // sizes the field, magnifies the wall
+    texDirty = true;
+    brkServe(.9);
+    sfxStart();
+    return true;
+  }
+
+  function brkEnd(){
+    if (!BRK.on) return;
+    BRK.on = false;
+    BRK.win = false; BRK.lose = false;
+    BRK.keys.l = BRK.keys.r = false;
+    document.documentElement.classList.remove('playing');
+    metrics();                                          // the wordmark returns as itself
+    texDirty = true;
+    fxResume();
+  }
+
+  if (!reduced){
+    BRK.run = { start: brkStart, end: brkEnd };
+
+    addEventListener('dblclick', (e) => {
+      if (BRK.on) return;
+      if (titleHit(e.clientX, e.clientY)){ e.preventDefault(); brkStart(); }
+    });
+    /* iOS does not reliably fire dblclick for a double-tap, so a finger gets its
+       own detector. It only ever looks at taps that land on the title, so it cannot
+       interfere with dragging the paddle or with anything else on the page. */
+    let lastTap = 0, lastX = 0, lastY = 0;
+    addEventListener('pointerdown', (e) => {
+      if (BRK.on || e.pointerType === 'mouse') return;
+      if (!titleHit(e.clientX, e.clientY)) return;
+      const t = performance.now();
+      if (t - lastTap < 350 && Math.abs(e.clientX - lastX) < 40 && Math.abs(e.clientY - lastY) < 40){
+        lastTap = 0;
+        brkStart();
+        return;
+      }
+      lastTap = t; lastX = e.clientX; lastY = e.clientY;
+    }, { passive: true });
+
+    // pointer: a mouse aims on hover, a finger aims while it is down
+    let dragId = null;
+    addEventListener('pointerdown', (e) => {
+      if (!BRK.on) return;
+      dragId = e.pointerId;
+      brkAim(e.clientX);
+      e.preventDefault();                               // no text selection under the field
+    }, { passive: false });
+    addEventListener('pointermove', (e) => {
+      if (!BRK.on) return;
+      if (e.pointerType === 'mouse' || e.pointerId === dragId) brkAim(e.clientX);
+    }, { passive: true });
+    addEventListener('pointerup', (e) => { if (e.pointerId === dragId) dragId = null; }, { passive: true });
+    addEventListener('pointercancel', () => { dragId = null; }, { passive: true });
+
+    addEventListener('keydown', (e) => {
+      if (!BRK.on) return;
+      const k = e.key;
+      if (k === 'Escape'){ brkEnd(); return; }
+      // A tap has to move the bar even though keydown and keyup both land between
+      // two ticks, so the first press nudges the target directly; holding the key
+      // then moves it continuously. Auto-repeat re-sends keydown, so the nudge is
+      // gated on the key not being down already.
+      if (k === 'ArrowLeft'  || k === 'a' || k === 'A'){
+        if (!BRK.keys.l) BRK.pad.target = clamp(BRK.pad.target - BRK.W * .022, BRK.pad.hw, BRK.W - BRK.pad.hw);
+        BRK.keys.l = true; e.preventDefault();
+      } else if (k === 'ArrowRight' || k === 'd' || k === 'D'){
+        if (!BRK.keys.r) BRK.pad.target = clamp(BRK.pad.target + BRK.W * .022, BRK.pad.hw, BRK.W - BRK.pad.hw);
+        BRK.keys.r = true; e.preventDefault();
+      } else if (k === ' '){ e.preventDefault(); }        // space would scroll the page
+    });
+    addEventListener('keyup', (e) => {
+      const k = e.key;
+      if (k === 'ArrowLeft'  || k === 'a' || k === 'A') BRK.keys.l = false;
+      else if (k === 'ArrowRight' || k === 'd' || k === 'D') BRK.keys.r = false;
+    });
+    addEventListener('blur', () => { BRK.keys.l = BRK.keys.r = false; });
+  }
 
   const t0 = performance.now();
   let flow = 0, last = t0;
@@ -792,10 +1380,12 @@ if (!reduced){
     if (texDirty){
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, TEX_W, TEX_H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE,
-                    dotTexture(shownChars));
+      const buf = BRK.on ? (BRK.lose ? brkErrorTexture() : brkTexture()) : dotTexture(shownChars);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, TEX_W, TEX_H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, buf);
       texDirty = false;
     }
+
+    brkStep(dt);
 
     // Links congest under load, so the healthy state runs fast and the red alert
     // throttles traffic to a crawl. Accumulated separately from u_time so the
@@ -806,8 +1396,27 @@ if (!reduced){
     gl.uniform1f(uSurge, surge);
     gl.uniform1f(uPower, power);
     gl.uniform1f(uGlitch, glitch);
-    gl.uniform2f(uTJit, T.jx * dpr / resY, (T.jy * dpr / resY) + titleOffY);
+    // the wall is parked at the top of the frame while a round is on; otherwise the
+    // title sits wherever the layout put it
+    gl.uniform2f(uTJit, T.jx * dpr / resY, (T.jy * dpr / resY) + (BRK.on ? BRK.jy : titleOffY));
     gl.uniform3f(uTPose, T.op, T.skew, T.red);
+    gl.uniform1f(uPlay, BRK.on ? 1 : 0);
+    gl.uniform1f(uActors, BRK.on && !BRK.win && !BRK.lose ? 1 : 0);
+    if (BRK.on){
+      // arena-local CSS pixels to the shader's uv: x and y are both measured against
+      // the frame height, from the centre of the frame, with y growing upward
+      const k = 1 / innerHeight, P = BRK.pad, B = BRK.ball;
+      gl.uniform4f(uArena, (BRK.ax + BRK.W / 2 - innerWidth / 2) * k,
+                           (innerHeight / 2 - BRK.ay - BRK.H / 2) * k, BRK.W / 2 * k, BRK.H / 2 * k);
+      gl.uniform4f(uPad, (BRK.ax + P.x - innerWidth / 2) * k,
+                         (innerHeight / 2 - BRK.ay - P.y) * k, P.hw * k, P.hh * k);
+      gl.uniform3f(uBall, (BRK.ax + B.x - innerWidth / 2) * k,
+                          (innerHeight / 2 - BRK.ay - B.y) * k, B.r * k);
+    }
+    // victory: a bloom that decays away, and a write-head crossing the wall
+    const wp = BRK.win ? Math.min(1, BRK.winT / BRK_WIN_DUR) : -1;
+    gl.uniform1f(uFlash, wp < 0 ? 0 : Math.sin(Math.min(1, wp * 1.6) * Math.PI) * .5);
+    gl.uniform1f(uReveal, wp < 0 ? -1 : wp * COLS);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
